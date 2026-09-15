@@ -1,0 +1,19 @@
+{
+  "overall": 50.0,
+  "packages": {
+    "github.com/netdisk/netdisk/internal/namepolicy": 86.0,
+    "github.com/netdisk/netdisk/internal/quotareconcile": 85.0,
+    "github.com/netdisk/netdisk/internal/objlock": 87.0,
+    "github.com/netdisk/netdisk/internal/filesvc": 61.0,
+    "github.com/netdisk/netdisk/internal/syncfeed": 68.0,
+    "github.com/netdisk/netdisk/internal/uploadsvc": 72.0
+  },
+  "critical": [
+    "github.com/netdisk/netdisk/internal/namepolicy",
+    "github.com/netdisk/netdisk/internal/quotareconcile",
+    "github.com/netdisk/netdisk/internal/objlock",
+    "github.com/netdisk/netdisk/internal/filesvc",
+    "github.com/netdisk/netdisk/internal/syncfeed",
+    "github.com/netdisk/netdisk/internal/uploadsvc"
+  ]
+}

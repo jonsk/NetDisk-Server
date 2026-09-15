@@ -1,0 +1,83 @@
+[Unit]
+Description=netdisk 网盘服务(单二进制:HTTP/REST + WebDAV + TUS + 内嵌前端)
+# 注意:systemd 要求 Documentation 是**合法 URI**,路径里的非 ASCII(中文文件名)
+# 会让它直接忽略这一行并在每次 daemon-reload 时打警告
+# ("Invalid URL, ignoring: file:///opt/netdisk/docs/网盘系统架构设计文档.md")。
+# 所以指向 ASCII 目录,而不是中文文件名。
+Documentation=file:///opt/netdisk/docs/
+# 9.4:不用容器,systemd 直接管理。依赖 PostgreSQL 与 Redis 两个外部服务。
+After=network-online.target postgresql.service redis-server.service
+Wants=network-online.target
+# 反复崩溃时不要无限重启刷日志:5 分钟内 5 次就停下等人看
+# (无限重启会把"一个持续的配置错误"变成一份刷不完的 journal,真正的原因被淹没)
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=netdisk
+Group=netdisk
+WorkingDirectory=/opt/netdisk
+
+# secret 只走 EnvironmentFile,永不进 yaml(6.8 纪律 1):
+# 文件权限 0600 + 与 yaml 分离,git 泄露面也小一半。内容见 deploy/systemd/secrets.env.example
+EnvironmentFile=/etc/netdisk/secrets.env
+
+# 自检(6.8 纪律 3):数据/暂存目录可写、监听端口可绑、依赖可用、迁移版本
+# —— 只有全部通过才真正启动。失败信息会以非 0 退出码落到 journal,
+# 而不是等到第一个用户上传时才报错。
+ExecStartPre=/opt/netdisk/netdisk -check -config /etc/netdisk/config.yaml
+
+# `-migrate` 的语义是 **"启动前先跑迁移,然后继续启动服务"**,不是"只跑迁移"
+# (见 cmd/netdisk/main.go:doMigrate 之后并不 return)。所以它必须写在 ExecStart 里。
+# ⚠ 踩过的坑:在部署脚本里把 `netdisk -migrate -config ...` 当前台命令等它退出,
+#   会**永远等下去** —— 它已经绑好 127.0.0.1:8080 在那服务了,而调用方的 `-check`
+#   随后报"监听地址不可用"(其实是自己占着)。迁移确实完成了,但脚本挂住。
+ExecStart=/opt/netdisk/netdisk -migrate -config /etc/netdisk/config.yaml
+
+# on-failure 而不是 always:正常停机(系统关机、systemctl stop)不该被拉起来。
+# 但**崩溃与 OOM 必须起来**——单进程承载全部协议,不重启就是整站不可用。
+Restart=on-failure
+RestartSec=3
+
+# fd 上限:1000 条 SSE 长连接(3.2 职责 4b)+ TUS 分片 + PG 连接池 + 对象文件句柄。
+# 默认 1024 会先耗尽,而表现是"连接莫名其妙被拒/文件打不开",极难归因。
+LimitNOFILE=65536
+
+# 内存上限:让 OOM 只杀本进程并由 systemd 拉起,而不是把整机拖到 OOM killer 乱杀。
+MemoryMax=2G
+
+# 优雅停止:Go 侧 shutdown_timeout 默认 20s(排空中的上传/下载要给足时间),
+# systemd 这里留 40s 余量;超时再由内核 SIGKILL —— 顺序不能反(先 SIGKILL 会
+# 让正在定稿的上传变成"文件损坏而无人知道")。
+KillSignal=SIGTERM
+TimeoutStopSec=40
+
+# ---- 沙箱(9.4 无容器部署的替代手段)----
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+# 整个文件系统只读,只有下面几处可写:数据目录、日志目录、备份状态目录。
+# **ReadWritePaths 必须写全服务真正会写的每一处**,否则 ProtectSystem=strict 下
+# 自检会以"某目录不可写"失败 —— 这正是我们希望它在启动时就暴露的。
+# ⚠ 实测踩到过:secrets.env 里配了 NETDISK_METRICS_BACKUP_STATUS_FILE=
+#   /var/lib/netdisk/backup-status.json,而这里只列了 data 与 log,
+#   于是启动自检一次性报出 3 项不可写(objects/tus-tmp/var/lib/netdisk)并拒绝启动。
+#   两者必须一起改:改 secrets 里的路径 = 同时改这里的 ReadWritePaths。
+ReadWritePaths=/opt/netdisk/data /var/log/netdisk /var/lib/netdisk
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+# 需要 IPv4/IPv6 监听并与 PG/Redis 建连;其余地址族不需要
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=netdisk
+
+[Install]
+WantedBy=multi-user.target

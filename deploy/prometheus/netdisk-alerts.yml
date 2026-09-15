@@ -1,0 +1,178 @@
+# ============================================================================
+# netdisk 告警规则(DP-04;Prometheus rule file)
+#
+# 分组原则:**每一组对应一类"没人发现就会变成事故"的失效**,而不是按指标来源分组。
+# 每条规则都写清"为什么这条会真的发生"与"看到它该先查什么" —— 否则运维看到
+# 一条没有任何上下文的告警,第一反应是把它静音。
+# ============================================================================
+groups:
+  - name: netdisk-availability
+    rules:
+      - alert: NetdiskDown
+        expr: up{job="netdisk"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "网盘服务不可用({{ $labels.instance }})"
+          description: "单进程承载 HTTP/REST + WebDAV + TUS + 前端,不可用即整站不可用。先看 systemctl status netdisk 与 journalctl -u netdisk。"
+          runbook: "docs/ops/03-故障处置.md#服务起不来"
+
+      - alert: NetdiskRestartFlapping
+        # ⚠ 2026-09-13 订正:原表达式用了一个**并不存在**的名字(`netdisk_process_start_time_*`,
+        # 服务实际导出的是 `netdisk_process_start_timestamp_seconds`,见 internal/metrics/metrics.go)。
+        # 引用不存在的指标 = **规则永远不会触发**,而 Prometheus 加载规则时不会报错
+        # (`vector(0)` 之类的空选择器是合法的)—— 这正是"告警看起来配好了"的经典失效。
+        # 另外:`_timestamp_seconds` 是 gauge,用 `increase()` 没有意义,判"重启过几次"
+        # 要用 `changes()`。
+        expr: changes(netdisk_process_start_timestamp_seconds[30m]) > 2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "网盘服务 30 分钟内反复重启"
+          description: "单元里 StartLimitBurst=5/300s 会把持续崩溃的进程停下等人看。反复重启通常是一个持续的配置/依赖错误。先看 journalctl -u netdisk 的最后 100 行与 systemd 的 NRestarts。"
+
+      - alert: NetdiskMemoryNearLimit
+        expr: netdisk_process_resident_memory_bytes / (320 * 1024 * 1024) > 0.85
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "网盘进程常驻内存接近 MemoryMax(320M)"
+          description: "本机总内存小,MemoryMax 触发即被 systemd 杀掉重启。先看是否有大目录列表/大量 SSE 连接。"
+
+  - name: netdisk-backup
+    rules:
+      - alert: NetdiskBackupStale
+        expr: time() - netdisk_backup_last_success_timestamp_seconds > 26 * 3600
+        for: 30m
+        labels:
+          severity: critical
+        annotations:
+          summary: "超过 26 小时没有成功的备份"
+          description: "每日 full 应在 02:30 完成。先看 /var/backups/netdisk/logs/ 最新日志与 systemctl status netdisk-backup.service。指标为 0 表示从未成功过。"
+          runbook: "docs/ops/02-备份与恢复.md#备份没跑成功"
+
+      - alert: NetdiskBackupFailed
+        expr: increase(netdisk_backup_failed_total[6h]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "备份任务出现失败"
+          description: "failed_total 只增不减(不自动归零),所以用 increase 看窗口内是否新增。常见原因:WAL 归档失败、磁盘满、borg 锁未释放。"
+
+      - alert: NetdiskWalArchiveFailing
+        expr: increase(netdisk_backup_failed_total[6h]) > 0 and time() - netdisk_backup_last_success_timestamp_seconds > 13 * 3600
+        labels:
+          severity: critical
+        annotations:
+          summary: "疑似 WAL 归档失败(PITR 能力正在退化)"
+          description: "archive_mode=on 但 archive_command 持续失败时,pg_wal 会一路涨到写满磁盘。检查 pg_stat_archiver.failed_count 与 /var/lib/netdisk/pg_wal_archive 是否在增长。"
+
+      - alert: NetdiskObjectsBackupStale
+        expr: time() - netdisk_backup_last_success_timestamp_seconds > 6 * 3600
+        labels:
+          severity: warning
+        annotations:
+          summary: "对象目录增量备份超过 6 小时未成功(窗口要求 ≤4h)"
+          description: "对象目录每 4 小时一班,超过 6 小时说明漏了一班以上:RPO 已超出验收口径。"
+
+      - alert: NetdiskRestoreDrillOverdue
+        expr: netdisk_restore_drill_last_timestamp_seconds == 0 or (time() - netdisk_restore_drill_last_timestamp_seconds) > 90 * 24 * 3600
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "恢复演练超过 90 天未做(或从未做过)"
+          description: "备份成功只证明写出来了,不证明能恢复。按 docs/ops/02-备份与恢复.md 的演练步骤跑一次 netdisk-restore-drill.sh 并把实测 RTO 记进演练记录。"
+          runbook: "docs/ops/02-备份与恢复.md#恢复演练"
+
+  - name: netdisk-integrity
+    rules:
+      - alert: NetdiskObjectLeak
+        expr: netdisk_object_leak_bytes > 64 * 1024 * 1024
+        for: 6h
+        labels:
+          severity: warning
+        annotations:
+          summary: "对象目录实际占用比库中登记多出 {{ $value | humanize1024 }}B"
+          description: "正向巡检(磁盘只涨不跌)。注意巡检**只读**,绝不自动修复:先查 audit_logs 里最近的删除与引用计数变化。"
+
+      - alert: NetdiskObjectMissing
+        expr: netdisk_object_missing_total >= 1
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "巡检抽查发现库中登记的对象在磁盘上不存在"
+          description: "这是**数据不可读**级事故(与泄漏完全不同)。立即停止一切清理动作,按 docs/ops/02-备份与恢复.md 走对象回放。"
+
+      - alert: NetdiskQuotaDrift
+        expr: netdisk_quota_drift_bytes > 1024 * 1024
+        for: 2h
+        labels:
+          severity: warning
+        annotations:
+          summary: "配额对账漂移 {{ $value | humanize1024 }}B(阈值 1MiB)"
+          description: "每条增减都在写事务里,所以漂移就是 bug 信号。已开 quota_drift_autofix 时看 netdisk_quota_reconcile_fixed 是否在回写。"
+
+      - alert: NetdiskPatrolStalled
+        expr: time() - netdisk_object_patrol_last_timestamp_seconds > 48 * 3600
+        labels:
+          severity: warning
+        annotations:
+          summary: "对象巡检超过 48 小时没跑(默认周期 24h)"
+          description: "巡检停了等于「磁盘只涨不跌」和「对象丢了」都没有观测手段。"
+
+      # ⚠ 2026-09-13 补齐(BE-S10-08):此前"应用侧没有磁盘容量指标",容量只能靠 node_exporter
+      # 的 node_filesystem_* 从宿主侧看 —— 而**对象目录不一定在 / 上**,且宿主指标看不出
+      # "本服务离拒绝上传还有多远"。现在 app 自己探对象区所在卷(fs 后端的 Usage()),
+      # 于是可以按水位告警,而不是等 predict_linear 算出宿主机满盘。
+      - alert: NetdiskDiskWatermarkNear
+        expr: netdisk_disk_used_percent > 85
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "对象区所在卷已用 {{ $value }}%(水位 90% 起拒绝上传)"
+          description: "`policy.disk_watermark_percent`(默认 90)一到位,上传/新建就返回 507 Insufficient Storage。先看是否有卡住的 pending_delete 或对象泄漏(netdisk_object_leak_bytes),再决定清理或扩容。远端后端(如 s3)不提供卷容量,这条不出样本 —— **缺样本不是 0**。"
+
+      - alert: NetdiskDiskProbeFailing
+        expr: increase(netdisk_disk_probe_failed_total[1h]) > 3
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "容量探测连续失败(1 小时内新增 {{ $value }} 次)"
+          description: "statfs 失败或后端不报容量时按纪律**不出样本**(绝不报 0),代价是那段时间磁盘曲线整段消失、上面的水位告警也不会响。看 journalctl 里 'disk probe failed' 的 WARN 行确认原因。"
+
+  - name: netdisk-host
+    rules:
+      - alert: HostDiskWillFillIn4Days
+        expr: predict_linear(node_filesystem_avail_bytes{mountpoint="/"}[6h], 4 * 24 * 3600) < 0
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "根分区预计 4 天内写满(当前剩余 {{ $value | humanize1024 }}B)"
+          description: "对象存储、PG WAL、备份三处都会涨。备份策略与清理见 docs/ops/02-备份与恢复.md。"
+
+      - alert: HostMemoryPressure
+        expr: (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) < 0.1
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "可用内存低于 10%"
+          description: "本机内存偏小(PG + Redis + Nginx + 应用 + Prometheus 同机)。OOM killer 可能杀掉 PG,而 PG 被杀比应用被杀严重得多。"
+
+      - alert: HostSwapThrashing
+        expr: rate(node_vmstat_pswpin[10m]) > 1000
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "换页活跃(swap in 持续 >1000/s)"
+          description: "swap 上跑数据库会让延迟出现长尾;先查是谁在吃内存。"

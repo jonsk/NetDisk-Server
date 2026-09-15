@@ -1,0 +1,12 @@
+[Unit]
+Description=netdisk 对象目录增量备份定时器(每 4 小时)
+
+[Timer]
+# 每 4 小时一班:验收要求"对象目录每日增量(窗口 ≤4h)"——窗口指的是**最长数据暴露**,
+# 所以定时器周期必须 ≤4h,而不是"每天跑一次算每日增量"。
+OnCalendar=*-*-* 00,04,08,12,16,20:15:00
+RandomizedDelaySec=300
+Persistent=true
+
+[Install]
+WantedBy=timers.target

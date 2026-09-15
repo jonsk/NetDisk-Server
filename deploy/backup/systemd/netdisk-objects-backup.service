@@ -1,0 +1,13 @@
+[Unit]
+Description=netdisk 对象目录增量备份(每 4 小时;RPO ≤4h)
+Documentation=file:///opt/netdisk/docs/
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/opt/netdisk/bin/netdisk-backup.sh objects
+TimeoutStartSec=1800
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7

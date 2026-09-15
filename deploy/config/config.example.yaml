@@ -1,0 +1,261 @@
+# ============================================================================
+# netdisk 服务端配置示例(对应架构文档 6.8 三条纪律)
+#
+# 三条纪律:
+#   1. **secret 只走环境变量**(JWT_SECRET / NETDISK_DB_PASSWORD /
+#      NETDISK_REDIS_PASSWORD),绝不写进本文件 —— 本文件会进版本库;
+#   2. **默认值只有一份**,在 Go 结构体里(`internal/config.Default()`);
+#      本文件是"演示与覆盖说明",不是默认值的来源。删掉任何一段,
+#      Go 侧默认值都会接管,而不是变成零值;
+#   3. **Duration 用可读写法**(`5m` / `30s` / `24h`),由自定义
+#      UnmarshalText 解析;写成纯数字会被拒绝。
+#
+# 优先级:Go 默认 < 本文件 < 环境变量。
+# 环境变量为空串 == 未设置(**不会**清掉默认值/文件值)。
+#
+# 启动自检:任何一项非法都会**一次性打印全部问题**并以非 0 退出:
+#   netdisk -config /etc/netdisk/config.yaml -check
+# 打印生效配置(已脱敏):
+#   netdisk -config /etc/netdisk/config.yaml -print-config
+# ============================================================================
+
+server:
+  # 监听地址。生产用 127.0.0.1:8080 由 Nginx 反代(不直接对外)。
+  http_addr: "127.0.0.1:8080"
+  public_url: "https://pan.example.com"
+  # 只有来自这些地址的请求才采信 X-Forwarded-For / X-Real-IP(3.2 职责 3)。
+  # 配错会导致审计与限速拿到伪造 IP。
+  trusted_proxies: ["127.0.0.1", "::1"]
+  read_header_timeout: 10s
+  request_timeout: 60s
+  shutdown_timeout: 20s
+  # 同进程内可同时持有的会话级 advisory 锁上限(6.4 连接纪律)
+  max_concurrent_locks: 256
+
+database:
+  host: "127.0.0.1"
+  port: 5432
+  name: "netdisk"
+  user: "netdisk"
+  # 本机连本地 PG 用 disable;生产跨机必须改成 require/verify-full
+  ssl_mode: "disable"
+  # 与 PG max_connections 对齐并留余量(架构 2.6/8.2:PG 100 → 应用 ≤40)
+  max_conns: 32
+  min_conns: 2
+  conn_max_lifetime: 30m
+  statement_timeout: 30s
+  # password 只从 NETDISK_DB_PASSWORD 注入,不放这里
+
+redis:
+  addr: "127.0.0.1:6379"
+  db: 0
+  # 键前缀:多环境共用同一 Redis 时必须区分,否则会互相覆盖
+  key_prefix: "netdisk:"
+  # password 只从 NETDISK_REDIS_PASSWORD 注入
+  #
+  # E-06:服务端 Redis 必须同时满足三条(架构 8.2,缺一条就会出问题):
+  #   ① requirepass <口令>            —— 与本项同值;否则登录/限速全线失效
+  #   ② appendonly yes + everysec     —— token/refresh/限速窗口/游标键必须跨重启存活;
+  #                                      关掉 AOF 时"重启一次 = 全体用户被登出"
+  #   ③ maxmemory-policy noeviction   —— token/游标键不得被淘汰,淘汰等于随机把人踢下线
+  # 另:bind 127.0.0.1(不对外),dir 用**绝对路径**(相对路径随启动目录变,
+  # 换个地方启动就会"另起一份数据",表现为重启后 key 全没了)
+
+jwt:
+  # 各端令牌有效期(R-14 分端:web/desktop;H5 渠道已随服务端拆除)
+  access_ttl: 15m
+  refresh_ttl: 168h          # 7 天
+  # 时钟偏差容忍(6.8 纪律 4:Windows 域环境时钟常有偏差)
+  leeway: 60s
+  issuer: "netdisk"
+  # secret 只从 JWT_SECRET 注入,且必须 >= 32 字节(否则拒启)
+
+# 业务策略阈值(全部可调;改这里不用改代码)
+policy:
+  max_name_bytes: 240        # 单个文件名 UTF-8 字节上限(6.7 规则 5)
+  max_depth: 31              # 目录深度硬上限(6.4)
+  max_path_bytes: 240        # 累计路径上限(R-11,与深度构成双上限)
+  fast_upload_min_size: 32768  # ≥32KB 才开秒传(6.10 五细则)
+  webdav_put_max_bytes: 104857600   # WebDAV PUT ≤100MB,超出提示走 TUS
+  default_quota_bytes: 0     # 0 = 不限制;新建个人空间配额
+  object_delete_delay_hours: 24     # 对象归零后的延迟删除窗口
+  # 9.1:存储卷已用百分比达到它就**拒绝新上传**(507 storage_full)。
+  # 0 = 用默认 90;100 = **关闭**(要关闭就显式写 100,不要写 0 —— 配置里的 0 更像"没填");
+  # 读不到容量时 fail-open:一次 statfs 失败不该让全站不能上传。
+  disk_watermark_percent: 90
+  sync_feed_keep_days: 90    # 变更流保留期(游标过期判据之一)
+  cursor_offline_days: 30    # 离线游标保留期(超期需全量重拉)
+  # 6.11:目录级操作(移动/删除子树)≤该行数走同步事务;超过转异步任务并返回 task_id
+  # 调大:操作立即可见(体验好),但大树会长时间持有行锁
+  # 调小:大树不再锁住空间,但客户端必须轮询 /api/v1/tasks/{id}
+  dir_op_sync_max_rows: 1000
+  # 配额对账(4.3 / BE-S3-06):每小时比对 used_bytes 与"文件实时 SUM + 在飞预留"。
+  # 漂移就是 bug 信号(每条增减都在写事务里),阈值只为**避免告警风暴**;
+  # 想对任何漂移都告警就设成 1。
+  quota_drift_alert_bytes: 1048576   # 1MiB
+  # 超阈值时回写账面(4.3 定稿:回写并告警)。口径已含在飞预留,不会抹掉正在
+  # 上传的预留;回写本身是**条件写**(读取到写入之间新来的预留会让它落空)。
+  # 只想观测不改数据时设为 false。
+  quota_drift_autofix: true
+
+# ============================================================================
+# 对象存储与暂存区(架构 6.5 / 6.1 / 3.1 职责 4)
+#
+# **当前只有一种后端:本地磁盘(fs)**。S3 / OSS / MinIO 一类远端后端在代码里
+# 只预留了常量(`storage.BackendS3` / `storage.BackendMem`),**没有实现** ——
+# 所以本段刻意**没有** backend / bucket / endpoint 这些键:写了也不会切换后端
+# (yaml 的未知键被静默忽略,不会报错)。能力清单与配置方法见
+# `Doc/ops/存储配置指南.md`。
+#
+# Root 之下是两个**固定子目录**,由 storage 包自己创建,不要手工往里面放东西:
+#   <root>/objects/   内容寻址的正式对象:objects/{xx}/{xx}/{sha256}
+#   <root>/tus-tmp/   TUS 分片暂存 + 定稿前的中间产物
+# 权限:目录 0750、对象文件 0640;属主必须是运行服务的用户(生产: netdisk)——
+# 属主不对时启动自检直接拒绝启动(比"第一次上传才 500"早得多)。
+#
+# **生产建议分盘**(3.1 职责 4):上传洪峰先写满暂存区;同盘时暂存写满会连带
+# 挤爆正式存储。分盘 = 把这两个子目录挂到不同分区/卷,无需改代码。
+# ============================================================================
+storage:
+  # ==========================================================================
+  # backend:**运行时只能有一个后端**(不能本地磁盘与远端对象存储并用)。
+  # 取值会**拒绝启动**而不是静默回落 —— 静默回落会把数据写到你以为不是的地方,
+  # 而且没有任何报错。可用取值(全部已接入,名单来自 gostorage 后端注册表):
+  #
+  #   fs       本地磁盘(默认,用下面的 root)
+  #   s3       S3 兼容:AWS / MinIO / 阿里云 OSS / 腾讯云 COS…(可自建端点)
+  #   minio    MinIO 专用实现(minio-go;与 s3 是两条独立代码路径)
+  #   azblob   Azure Blob(容器名填 bucket;Azurite 模拟器需 endpoint)
+  #   gcs      Google Cloud Storage(还需 project_id;凭据用 file:/base64:/env:)
+  #   oss cos bos obs uss   阿里云 / 腾讯云 / 百度云 / 华为云 / 又拍云(都需显式 endpoint)
+  #   ftp      FTP(**没有原子写**,见「能力矩阵」;端点用 tcp:)
+  #   ipfs     IPFS(内容寻址;构造期会连本地守护进程)
+  #   hdfs     HDFS(**有 move → 原子提交**;端点用 tcp:)
+  #   gdrive   Google Drive(bucket 是目录 id)
+  #   dropbox  Dropbox(凭据用 apikey:)
+  #
+  # **明确排除**的(实测结论,写它会拒绝启动并说明原因):
+  #   memory  -> 用户 2026-09-13 决定不作为可配置后端(进程内,数据不落盘)
+  #   sftp    -> go-storage 上游**没有**这个服务(组织 28 个服务仓库里只有 ftp)
+  #   webdav  -> 上游模块是**空壳**(六个方法全部 panic("not implemented"))
+  #   cephfs / ocios / us3 / zip -> 上游同样是空壳;tar 是包装类且只实现部分方法
+  #   qingstor -> 会再挂一套核心(go-storage v3 / aos-dev 路径),破坏"核心唯一"
+  #   上游**没有实现**、等待上游的:azfile / kodo / onedrive / storj
+  # ==========================================================================
+  backend: "fs"
+  # 换后端时:库里已有对象属于别的后端 → **默认拒绝启动**(否则那些文件下载 404)。
+  # 本项目不做对象迁移工具,所以切后端前请先手工确认数据的去向(见 BE-S5-18 说明)。
+  allow_backend_mismatch: false
+
+  # ==========================================================================
+  # remote:所有**远端后端**共用的参数(s3/minio/azblob/gcs/oss/cos/bos/obs/uss/
+  # ftp/ipfs/hdfs/gdrive/dropbox)。只有 backend != "fs" 时才会被读取。
+  #
+  # 每样参数"该不该有"由后端注册表决定(见《存储配置指南》的能力矩阵):
+  # 比如 ipfs/dropbox 没有桶、ftp/hdfs/ipfs 必须有 endpoint、gcs 还要 project_id。
+  # **配错会在启动自检里直接报出来**(含该后端接受的写法),不会等到第一次上传。
+  #
+  # 凭据**只走 env**(R-15),本文件不写:
+  #   NETDISK_STORAGE_CREDENTIAL   通用(推荐),格式因后端而异:
+  #       hmac:AK:SK(s3/minio/azblob/oss/cos/bos/obs/uss)
+  #       basic:user:pass(ftp)          apikey:TOKEN(dropbox)
+  #       file:/path/key.json | base64:... | env:VAR(gcs/gdrive)
+  #   NETDISK_S3_ACCESS_KEY / _SECRET_KEY  旧写法(HMAC),会被折算成 hmac:AK:SK
+  #
+  # 自建 MinIO 的实测最小配置:
+  #   backend: "s3"
+  #   remote: { endpoint: "http://127.0.0.1:9000", bucket: "netdisk", path_style: true }
+  # ==========================================================================
+  remote:
+    endpoint: ""            # 例:http://127.0.0.1:9000(MinIO);云厂商可留空(oss/bos/obs 例外,必须给)
+    region: ""              # AWS 必填(如 us-east-1);自建服务可留空
+    bucket: ""              # 桶/容器/根目录名(ipfs/dropbox 不需要;gdrive 里是目录 id)
+    prefix: ""              # 对象键前缀(留空则落在桶根下的 objects/…)
+    project_id: ""           # 仅 gcs 需要(上游连接串里有这个参数)
+    path_style: true        # 自建 S3 服务需要;AWS 可设 false
+
+  # 本值 = Go 里的默认值(`internal/config.Default()`);生产由
+  # /etc/netdisk/secrets.env 的 NETDISK_STORAGE_ROOT=/opt/netdisk/data 覆盖。
+  # ⚠ 它同时是**所有后端的本地暂存根**(TUS 分片与定稿中间态永远落在本地磁盘上)。
+  # 改这里或改 env 时,**必须同步改 systemd 单元的 ReadWritePaths**
+  # (ProtectSystem=strict 下没列进去的路径写不了,表现为启动自检报"不可写")。
+  root: "./data"
+
+webui:
+  # 前端产物已 embed 进 Go 二进制(ADR-4),这里是路由前缀
+  admin_prefix: "/admin/"
+# 对象泄漏 / 反向孤儿巡检(8.4 / BE-S10-04)
+#
+# 两个方向分列上报,**不要**合成一个"不一致数":漏(占空间)与丢(数据不可读)
+# 是完全不同的事故,合成一个数会让人无法判断该先查哪个。
+# 巡检**只读**:绝不自动修复、绝不改写 file_objects 状态(误判被自动修复放大
+# 就是数据损坏)。
+patrol:
+  # 默认 true。关掉它意味着"磁盘只涨不跌"与"对象丢了"都没有任何观测手段。
+  enabled: true
+  # 巡检周期(小时)。**关闭巡检请用 enabled: false**,不要用 0(0 会被拒绝启动:
+  # 它读起来像"不限制",实际是"疯狂巡检")
+  interval_hours: 24
+  # 正向(磁盘实际字节 vs PG 未删除对象字节和)差值超过它就告警
+  leak_alert_bytes: 67108864   # 64MiB
+  # 反向抽样行数**按后端分级**(V2.18 四审 P2-B):本地 fs 是廉价的 stat 系统调用;
+  # S3/OSS/MinIO 类远端后端每个对象一次 HEAD(计费 + 高延迟),千行级巡检本身
+  # 就是成本项。后端类型取自 Storager.Backend(),不由配置声明。
+  local_sample_size: 1000
+  remote_sample_size: 100
+
+log:
+  level: "info"              # debug / info / warn / error
+  format: "text"             # text / json(生产建议 json)
+
+# 限速阈值(3.2 职责 7:与 Nginx 粗限流构成双层)
+#
+# 每个接口族**独立配置**;两窗口同时生效、取更严者:
+#   per_second 挡突发,per_minute 挡慢速刷。
+# **全 0 = 该接口族完全不限速**,启动自检会直接拒绝(这是易被忽略的高危配置)。
+rate_limits:
+  # 登录是暴力破解面:收得最紧,且按 IP(此时还没有 userID)
+  login:
+    per_second: 5
+    per_minute: 30
+    cost: 1
+    by_ip: true
+  # 上传建任务单次成本高(预留额度),按次限;已认证按用户
+  upload:
+    per_second: 10
+    per_minute: 300
+    cost: 1
+    by_ip: false
+  # 列表是同步高频路径
+  file_list:
+    per_second: 20
+    per_minute: 600
+    cost: 1
+    by_ip: false
+  # 详情/HEAD 用于同步前探测,允许更高频
+  file_read:
+    per_second: 50
+    per_minute: 2000
+    cost: 1
+    by_ip: false
+  # 写操作(建目录/改名/移动/删除/复制/共享)比读严格:会改元数据、引用计数与配额。
+  # **必须在此登记**:漏登记的族会回落到 default,而 default 是 by_ip=true ——
+  # 同一出口 IP 下的所有用户会共享同一份写配额(实测:客户端建目录/传文件被 429,
+  # 而客户端当时把 429 当永久失败,表现为"文件永远传不上去")。
+  file_write:
+    per_second: 20
+    per_minute: 600
+    cost: 1
+    by_ip: false
+  # WebDAV 客户端(资源管理器)一次目录浏览会连发数十请求
+  webdav:
+    per_second: 60
+    per_minute: 3000
+    cost: 1
+    by_ip: true
+  # 未登记接口族的兜底(**不要清零**)
+  default:
+    per_second: 20
+    per_minute: 600
+    cost: 1
+    by_ip: true

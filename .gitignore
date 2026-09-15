@@ -1,0 +1,51 @@
+# Server-Ent (netdisk server) .gitignore
+
+# ---- 凭据(绝不可提交)----
+.secrets/
+secrets.env
+*.pem
+*.pfx
+*.key
+
+# ---- Go 构建与模块缓存 ----
+.gocache/
+.gomodcache/
+.tools/
+bin/
+*.exe
+*.dll
+*.test
+*.out
+
+# ---- 前端 embed 产物(由 web 仓拷贝进来,不入库)----
+internal/webui/dist/
+
+# ---- 部署 / 运行数据 ----
+deploy/data/
+deploy/logs/
+data/
+logs/
+*.log
+*.pid
+tmp/
+.tmp/
+
+# ---- 制品 / 归档 ----
+dist/
+artifacts/
+*.msi
+*.wixpdb
+
+# ---- IDE / OS ----
+.idea/
+.vscode/
+*.user
+*.suo
+.DS_Store
+Thumbs.db
+
+# ---- 本地临时探针(开发期一次性脚本)----
+.*.py
+.*.ps1
+.probe/
+.*probe*/

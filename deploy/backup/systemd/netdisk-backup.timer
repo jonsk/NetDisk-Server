@@ -1,0 +1,11 @@
+[Unit]
+Description=netdisk 每日备份(PG full + 对象目录 + WAL 归档自检)
+
+[Timer]
+# 02:30 且带随机延迟:多台机器同时备份会把共享存储打满
+OnCalendar=*-*-* 02:30:00
+RandomizedDelaySec=900
+Persistent=true
+
+[Install]
+WantedBy=timers.target

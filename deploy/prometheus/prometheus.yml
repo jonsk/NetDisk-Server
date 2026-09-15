@@ -1,0 +1,35 @@
+# netdisk 监控抓取配置(DP-04;/etc/prometheus/prometheus.yml)
+#
+# 两个 job:
+#   netdisk —— 应用自身指标(请求/SSE/审计/变更流/备份/巡检/配额),走回环,
+#              不需要 NETDISK_METRICS_TOKEN(应用只允许回环或可信代理抓取)
+#   node    —— 主机指标(磁盘/内存/swap),node_exporter 默认监听 127.0.0.1:9100
+global:
+  scrape_interval: 30s
+  evaluation_interval: 30s
+  external_labels:
+    host: netdisk-debian
+
+rule_files:
+  - /etc/prometheus/netdisk-alerts.yml
+
+scrape_configs:
+  - job_name: netdisk
+    static_configs:
+      - targets: ['127.0.0.1:8080']
+        labels:
+          service: netdisk
+
+  - job_name: node
+    static_configs:
+      - targets: ['127.0.0.1:9100']
+        labels:
+          service: host
+
+# 告警通道未接(内网无 Alertmanager)。规则仍然**在评估**并可在
+# /api/v1/rules 与 /alerts 上看到状态 —— 这比"规则文件躺在磁盘上没人执行"强。
+# 接 Alertmanager 时解开下面这段:
+# alerting:
+#   alertmanagers:
+#     - static_configs:
+#         - targets: ['127.0.0.1:9093']

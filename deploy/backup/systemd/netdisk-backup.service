@@ -1,0 +1,16 @@
+[Unit]
+Description=netdisk 每日备份(PG full + 对象目录 + WAL 归档自检)
+Documentation=file:///opt/netdisk/docs/
+After=postgresql.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+# 备份要读 PG 数据目录/以 postgres 身份跑 pg_dump、写 /var/backups —— 需要 root
+ExecStart=/opt/netdisk/bin/netdisk-backup.sh full
+# 备份是"必须成功"的任务:失败要让 systemd 记下来(配合 OnFailure= 可接告警)
+TimeoutStartSec=3600
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
