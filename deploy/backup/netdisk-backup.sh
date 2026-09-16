@@ -21,7 +21,7 @@ MODE="${1:-full}"
 PREFIX=/opt/netdisk
 ETC=/etc/netdisk
 BACKUP_ROOT="${BACKUP_ROOT:-/var/backups/netdisk}"
-PG_BIN=/usr/lib/postgresql/18/bin
+PG_BIN=/usr/lib/postgresql/17/bin
 # ⚠ 归档目录**不能**放在 /var/lib/netdisk 下:那是 netdisk:netdisk 0750,
 #   postgres 用户没有 x 权限,穿不过去 → 归档 100% 失败(PG 日志:Permission denied),
 #   后果是 pg_wal 涨到写满磁盘。放在 postgres 自己的目录树里。

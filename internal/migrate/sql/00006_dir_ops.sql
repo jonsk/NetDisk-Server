@@ -19,7 +19,7 @@ ALTER TABLE files ADD CONSTRAINT files_op_state_chk CHECK (op_state IN ('', 'mov
 CREATE INDEX files_op_state_idx ON files (id) WHERE op_state <> '';
 
 CREATE TABLE dir_op_tasks (
-    id              uuid PRIMARY KEY DEFAULT uuidv7(),
+    id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     kind            varchar(16) NOT NULL CHECK (kind IN ('move', 'delete')),
     state           varchar(16) NOT NULL DEFAULT 'pending'
                     CHECK (state IN ('pending', 'running', 'done', 'failed')),

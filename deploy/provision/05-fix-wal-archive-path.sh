@@ -9,7 +9,7 @@
 set -eu
 
 NEW_DIR=/var/lib/postgresql/wal_archive
-CONF=/etc/postgresql/18/main/conf.d/20-netdisk-archive.conf
+CONF=/etc/postgresql/17/main/conf.d/20-netdisk-archive.conf
 
 echo "== 1. 归档目录移到 postgres 自己的目录树(父目录可达)=="
 install -d -o postgres -g postgres -m 0700 "$NEW_DIR"

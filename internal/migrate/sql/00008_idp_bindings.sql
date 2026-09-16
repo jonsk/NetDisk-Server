@@ -9,7 +9,7 @@
 --     本地账号(防"同一企微用户在库里变成两个账号");(user_id, kind) 唯一 =
 --     一个本地账号在同一家 IdP 里只绑一个身份(防换绑后旧身份仍能登录)。
 CREATE TABLE user_idp_bindings (
-    id          uuid PRIMARY KEY DEFAULT uuidv7(),
+    id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     kind        varchar(32) NOT NULL,          -- wecom / dingtalk / ...
     external_id varchar(191) NOT NULL,         -- 企微 userid / 钉钉 unionid
     user_id     uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,

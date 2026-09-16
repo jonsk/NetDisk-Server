@@ -1,9 +1,9 @@
 -- +goose Up
 -- ============================================================================
 -- 00001_init.sql — 网盘系统初始 schema
--- 依据: 架构文档 V3.0 §6.4 元数据模型 + §4.1/4.2/4.3 + ADR-1(PG 18)
+-- 依据: 架构文档 V3.0 §6.4 元数据模型 + §4.1/4.2/4.3 + ADR-1(PG 17)
 -- 要点:
---   * PG 18 原生 uuidv7() 作为主键默认值(11 章:时间有序 id)
+--   * PG 13+ 内置 gen_random_uuid() 作为主键默认值(降级至 PG17,弃用 PG18 专有的 uuidv7)
 --   * files.etag 为 STORED 生成列,值**不含双引号**(引号由序列化层 quoteETag 统一加,R-21)
 --   * file_objects 四态 + 不变式 ref_count=0 ⟺ state<>'live'(R-06)
 --   * 目录内判重统一 (space_id, parent_id, lower(name)) 唯一索引(6.4 P2-2)
@@ -14,7 +14,7 @@ CREATE EXTENSION IF NOT EXISTS pg_trgm;
 
 -- ---------------------------------------------------------------- 用户与身份
 CREATE TABLE users (
-    id            uuid PRIMARY KEY DEFAULT uuidv7(),
+    id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     username      varchar(64)  NOT NULL,
     email         varchar(255),
     display_name  varchar(128) NOT NULL DEFAULT '',
@@ -36,7 +36,7 @@ CREATE UNIQUE INDEX users_ext_wecom_key    ON users (ext_id_wecom)    WHERE ext_
 CREATE UNIQUE INDEX users_ext_dingtalk_key ON users (ext_id_dingtalk) WHERE ext_id_dingtalk IS NOT NULL;
 
 CREATE TABLE idp_providers (
-    id               uuid PRIMARY KEY DEFAULT uuidv7(),
+    id               uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     name             varchar(64)  NOT NULL,
     kind             text         NOT NULL CHECK (kind IN ('wecom','dingtalk','oidc_generic','ldap')),
     corp_id          varchar(255) NOT NULL DEFAULT '',
@@ -52,7 +52,7 @@ CREATE TABLE idp_providers (
 CREATE UNIQUE INDEX idp_providers_kind_corp_key ON idp_providers (kind, corp_id);
 
 CREATE TABLE user_sso_bindings (
-    id               uuid PRIMARY KEY DEFAULT uuidv7(),
+    id               uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id          uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
     provider_id      uuid NOT NULL REFERENCES idp_providers(id) ON DELETE RESTRICT,
     provider_kind    text NOT NULL,
@@ -66,7 +66,7 @@ CREATE INDEX user_sso_bindings_raw_gin  ON user_sso_bindings USING gin (raw_user
 
 -- ---------------------------------------------------------------- 组织架构
 CREATE TABLE departments (
-    id         uuid PRIMARY KEY DEFAULT uuidv7(),
+    id         uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     parent_id  uuid REFERENCES departments(id) ON DELETE RESTRICT,
     name       varchar(128) NOT NULL,
     sort_order int NOT NULL DEFAULT 0,
@@ -96,7 +96,7 @@ CREATE TABLE user_departments (
 );
 
 CREATE TABLE groups (
-    id          uuid PRIMARY KEY DEFAULT uuidv7(),
+    id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     name        varchar(128) NOT NULL,
     description text NOT NULL DEFAULT '',
     owner_id    uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
@@ -113,7 +113,7 @@ CREATE TABLE group_members (
 
 -- ---------------------------------------------------------------- 空间(个人盘统一为 kind=personal)
 CREATE TABLE spaces (
-    id          uuid PRIMARY KEY DEFAULT uuidv7(),
+    id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     kind        text NOT NULL CHECK (kind IN ('personal','team')),
     group_id    uuid REFERENCES groups(id) ON DELETE RESTRICT,   -- team 必填,personal 为 NULL
     owner_id    uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
@@ -170,7 +170,7 @@ CREATE INDEX file_objects_deleting_idx ON file_objects (delete_after) WHERE stat
 
 -- ---------------------------------------------------------------- 文件元数据
 CREATE TABLE files (
-    id           uuid PRIMARY KEY DEFAULT uuidv7(),
+    id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     space_id     uuid NOT NULL REFERENCES spaces(id) ON DELETE RESTRICT,
     parent_id    uuid REFERENCES files(id) ON DELETE RESTRICT,
     owner_id     uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT, -- 创建者(审计主体),不参与判权
@@ -224,7 +224,7 @@ CREATE INDEX sync_cursors_seen_idx ON sync_cursors (last_seen_at);
 
 -- ---------------------------------------------------------------- 上传任务与配额预留(4.3 / 6.10)
 CREATE TABLE uploads (
-    id             uuid PRIMARY KEY DEFAULT uuidv7(),
+    id             uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id        uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
     space_id       uuid NOT NULL REFERENCES spaces(id) ON DELETE RESTRICT,
     parent_id      uuid REFERENCES files(id) ON DELETE RESTRICT,
@@ -247,7 +247,7 @@ CREATE INDEX uploads_expire_idx     ON uploads (expires_at) WHERE state = 'reser
 
 -- ---------------------------------------------------------------- 分享(6.3 / 1.1)
 CREATE TABLE shares (
-    id             uuid PRIMARY KEY DEFAULT uuidv7(),
+    id             uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     token          varchar(64) NOT NULL,
     file_id        uuid NOT NULL REFERENCES files(id) ON DELETE CASCADE,
     user_id        uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
@@ -271,7 +271,7 @@ CREATE TABLE file_locks (
 
 -- ---------------------------------------------------------------- 审计(4.4,按月分区)
 CREATE TABLE audit_logs (
-    id          uuid NOT NULL DEFAULT uuidv7(),
+    id          uuid NOT NULL DEFAULT gen_random_uuid(),
     created_at  timestamptz NOT NULL DEFAULT now(),
     user_id     uuid,
     space_id    uuid,

@@ -23,7 +23,7 @@
 # ============================================================================
 set -eu
 
-PG_BIN=/usr/lib/postgresql/18/bin
+PG_BIN=/usr/lib/postgresql/17/bin
 PGVER=18
 BASE_ROOT=/var/backups/netdisk/base
 RESTORE_DIR=/var/lib/postgresql/$PGVER/pitr-restore

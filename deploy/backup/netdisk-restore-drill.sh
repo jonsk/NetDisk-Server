@@ -17,7 +17,7 @@
 # ============================================================================
 set -eu
 
-PG_BIN=/usr/lib/postgresql/18/bin
+PG_BIN=/usr/lib/postgresql/17/bin
 BACKUP_ROOT="${BACKUP_ROOT:-/var/backups/netdisk}"
 STATUS_FILE=/var/lib/netdisk/backup-status.json
 DRILL_DB=netdisk_drill_$(date +%Y%m%d)
