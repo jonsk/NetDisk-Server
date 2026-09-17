@@ -123,7 +123,8 @@ type Policy struct {
 }
 
 type WebUI struct {
-	AdminPrefix string `yaml:"admin_prefix"`
+	AdminPrefix    string `yaml:"admin_prefix"`
+	LandingPrefix  string `yaml:"landing_prefix"`
 }
 
 // Patrol 是对象泄漏/反向孤儿巡检(BE-S10-04 / 8.4)。
@@ -504,7 +505,7 @@ func Default() *Config {
 			QuotaDriftAlertBytes: 1 << 20,
 			QuotaDriftAutoFix:    true,
 		},
-		WebUI: WebUI{AdminPrefix: "/admin/"},
+		WebUI: WebUI{AdminPrefix: "/admin/", LandingPrefix: "/s/"},
 		// 8.4:对象巡检默认开启、每日一轮;抽样量按后端分级(BE-S10-04)
 		Patrol: Patrol{
 			Enabled:          true,

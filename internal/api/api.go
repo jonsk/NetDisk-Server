@@ -135,6 +135,12 @@ func New(d Deps) http.Handler {
 	admin := webui.Handler(d.Cfg.WebUI.AdminPrefix, "admin", true)
 	mux.Handle("GET "+d.Cfg.WebUI.AdminPrefix+"{rest...}", admin)
 
+	// ---- 分享访客落地页 /s/ 由 Go embed 提供(与 /admin 同机制,独立站点)----
+	// 访客免登录面:展示文件名/大小/有效期/剩余次数/输密码/下载,均复用既有
+	// 公开接口 GET /api/v1/shares/{token}/meta 与 /download。绝不与 /admin 共用 bundle。
+	landing := webui.Handler(d.Cfg.WebUI.LandingPrefix, "landing", true)
+	mux.Handle("GET "+d.Cfg.WebUI.LandingPrefix+"{rest...}", landing)
+
 	// ---- 受保护示例端点:用于验证鉴权链与 audience 分端 ----
 	authed := middleware.Auth(d.Tokens) // 不限 audience
 	mux.Handle("GET /api/v1/me", authed(http.HandlerFunc(handleMe)))
