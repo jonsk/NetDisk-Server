@@ -1,0 +1,1485 @@
+openapi: 3.1.0
+info:
+  title: netdisk REST API
+  version: 1.0.0
+  description: |
+    网盘系统的**唯一接口契约**(11 章:servergen 由它生成 web 与桌面端的模型)。
+
+    三条纪律:
+
+    1. **本文件是唯一来源**。任何接口改动必须改这里,然后 `pnpm gen:api` 重新生成
+       客户端类型;CI 用 `pnpm check:api` 做**双向 diff 门禁** —— 契约改了没重新生成、
+       或生成的类型被手改过,都会在这里被拦下。
+    2. **手写类型被 lint 拦**(`pnpm lint:contract`):`packages/api` 之外不得出现
+       `fetch(`,也不得手写与生成模型同名的对象形状 —— 否则"契约单源"名存实亡。
+    3. **错误体统一**为 `Error`(与 internal/apierr 的 JSON 一一对应)。
+       客户端按 `code` 分流,绝不解析 `message` 文案。
+
+    覆盖范围:一期已实现且前端/桌面端会调用的接口。WebDAV 是 HTTP 协议入口,
+    不进本契约(它的语义由 RFC 4918 定义);`/metrics`、`/healthz` 属运维端点,同样不入。
+servers:
+  - url: /
+    description: 与前端同源(Go 单端口;Nginx 只做 TLS 与分流)
+tags:
+  - name: auth
+  - name: files
+  - name: upload
+  - name: sync
+  - name: shares
+  - name: admin
+
+paths:
+  /api/v1/version:
+    get:
+      tags: [auth]
+      summary: 版本与最低客户端版本(客户端据此决定是否强制升级)
+      security: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/VersionInfo" }
+
+  /api/v1/me:
+    get:
+      tags: [auth]
+      summary: 当前登录者(不含任何权限列表,R-13)
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MeView" }
+
+  /api/v1/auth/login:
+    post:
+      tags: [auth]
+      summary: 登录(账密)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LoginRequest" }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LoginResult" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /api/v1/auth/refresh:
+    post:
+      tags: [auth]
+      summary: 刷新令牌
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refresh_token]
+              properties:
+                refresh_token: { type: string }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LoginResult" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/auth/logout:
+    post:
+      tags: [auth]
+      summary: 登出(吊销当前刷新令牌)
+      responses:
+        "204": { description: 已登出 }
+
+  /api/v1/files:
+    get:
+      tags: [files]
+      summary: 列目录(keyset 分页)
+      description: |
+        参数名以本文档与架构文档为准:`space` / `parent`。
+        服务端同时接受历史拼法 `space_id` / `parent_id`(同义别名),
+        但**只声明一个规范名** —— 声明两个同义参数会让生成的客户端类型出现
+        两个字段,调用方无从选择。
+      parameters:
+        - { name: space, in: query, schema: { type: string } }
+        - { name: parent, in: query, schema: { type: string } }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 1000, default: 200 }
+        - name: after
+          in: query
+          description: 上一页最后一个条目的 lower(name)
+          schema: { type: string }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FileListResult" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "410": { $ref: "#/components/responses/SpaceRevoked" }
+
+  /api/v1/files/dirs:
+    post:
+      tags: [files]
+      summary: 新建目录(Bearer 令牌可用的 REST 入口)
+      description: |
+        目录创建此前**只有 WebDAV MKCOL** 一个入口(见 ADR-6:WebDAV 走 Basic
+        账密换票)。桌面客户端按设计只持有 Bearer 令牌、没有账密,于是它
+        **建不了目录** —— 连带"任何要放进子目录的文件"都传不上去
+        (实测报错:`WebDAV 认证失败: 请提供 Basic 凭据`)。本路径补上这个缺口。
+
+        `space_id` / `parent_id` 缺省时分别落到**调用者的个人空间**与**该空间
+        根目录**(与 `GET /api/v1/files` 的两个参数同义,含历史别名拼法)。
+
+        语义是**严格新建**:同目录下已有同名条目(不分大小写)→ 409
+        `name_conflict`,**不**顺手返回已有条目 —— 想"复用已存在目录"的调用方
+        自己按名字查一次;把两种意图塞进同一个 201 会让客户端无法区分
+        "我刚建了它"与"它本来就存在",而这正是同步逻辑需要的区别。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                space_id: { type: string, description: 缺省 = 调用者个人空间 }
+                parent_id: { type: string, description: 缺省 = 空间根目录 }
+                name: { type: string }
+      responses:
+        "201":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EntryView" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "410": { $ref: "#/components/responses/SpaceRevoked" }
+
+  /api/v1/files/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    get:
+      tags: [files]
+      summary: 文件详情
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EntryView" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [files]
+      summary: 改名(带 base_version 乐观锁)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string }
+                base_version: { type: integer, format: int64, default: 0 }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EntryView" }
+        "409": { $ref: "#/components/responses/Conflict" }
+    delete:
+      tags: [files]
+      summary: 硬删(无回收站;目录删整棵子树)
+      responses:
+        "200":
+          description: 同步完成(子树行数 ≤ dir_op_sync_max_rows)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DeleteResult" }
+        "202":
+          description: |
+            超阈值已转异步删除(6.11):行**此刻还在**,响应里只有 task_id。
+            轮询 `GET /api/v1/tasks/{id}`;入队后该子树上的读写一律 409
+            `dir_op_in_progress`,直到任务结束。
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DeleteResult" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /api/v1/files/{id}/content:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    head:
+      tags: [files]
+      summary: 取内容元信息(与 GET 同头:ETag/Content-Length/Content-Type,不回 body)
+      responses:
+        "200": { description: 头信息 }
+        "304": { description: ETag 未变 }
+        "404": { $ref: "#/components/responses/NotFound" }
+    get:
+      tags: [files]
+      summary: 下载(流式;支持 Range/If-Range/条件请求)
+      responses:
+        "200": { description: 完整内容 }
+        "206":
+          description: 部分内容
+          headers:
+            Content-Range:
+              schema: { type: string }
+        "304": { description: ETag 未变 }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "416": { description: Range 越界 }
+
+  /api/v1/files/{id}/move:
+    post:
+      tags: [files]
+      summary: 移动(可同时改名;不跨空间)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [parent_id]
+              properties:
+                parent_id: { type: string }
+                name: { type: string }
+                base_version: { type: integer, format: int64, default: 0 }
+      responses:
+        "200":
+          description: 同步完成(子树行数 ≤ dir_op_sync_max_rows)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MoveResult" }
+        "202":
+          description: |
+            超阈值已转异步任务(6.11):响应里只有 task_id,条目还在原位置。
+            客户端轮询 `GET /api/v1/tasks/{id}`,任务完成后再刷新列表 ——
+            **不要**在收到 202 时本地做乐观移动(任务可能失败)。
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MoveResult" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /api/v1/tasks/{id}:
+    get:
+      tags: [files]
+      summary: 目录级异步任务状态(6.11,供轮询)
+      description: |
+        只返回**自己的**任务(管理员例外);非本人一律 404 而不是 403 ——
+        403 等于确认"这个任务 id 存在",而任务里有空间/文件 id 与文件名。
+        未结束时**不回** `rows_affected/freed_bytes/released_objects`
+        (回 0 会被客户端当成"这次操作什么都没删")。
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TaskStatus" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/files/{id}/subtree-stats:
+    get:
+      tags: [files]
+      summary: 子树影响面预检(删除确认与容量预估共用)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SubtreeStats" }
+
+  /api/v1/files/{id}/copy:
+    post:
+      tags: [files]
+      summary: 复制文件或目录(逻辑复制 + 引用计数,不搬内容)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                target_parent_id: { type: string }
+                name: { type: string, description: 空则自动生成"原名 (副本)" }
+      responses:
+        "201":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CopyResult" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /api/v1/files/{id}/share-to-space:
+    post:
+      tags: [files]
+      summary: 共享到另一个空间(只新建元数据行 + 引用 +1)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [target_space_id]
+              properties:
+                target_space_id: { type: string }
+                target_parent_id: { type: string }
+                name: { type: string }
+      responses:
+        "201":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EntryView" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /api/v1/files/{id}/lock:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    get:
+      tags: [files]
+      summary: 查询编辑锁(不含持有者身份以外的信息;无锁时 404)
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  lock: { $ref: "#/components/schemas/LockView" }
+                  ttl_seconds: { type: integer, format: int64 }
+        "404": { $ref: "#/components/responses/NotFound" }
+    post:
+      tags: [files]
+      summary: 获取/续期编辑锁(30min;过期可抢占)
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  lock: { $ref: "#/components/schemas/LockView" }
+                  ttl_seconds: { type: integer, format: int64 }
+        "409": { $ref: "#/components/responses/Conflict" }
+    delete:
+      tags: [files]
+      summary: 释放编辑锁(幂等)
+      responses:
+        "204": { description: 已释放 }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/v1/upload/create:
+    post:
+      tags: [upload]
+      summary: 创建上传任务(预留额度;预检命中时下发秒传挑战)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UploadCreateRequest" }
+      responses:
+        "201":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UploadCreateResult" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "507": { $ref: "#/components/responses/QuotaExceeded" }
+
+  /api/v1/upload/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    delete:
+      tags: [upload]
+      summary: 取消上传(即时释放预留)
+      responses:
+        "204": { description: 已取消 }
+    head:
+      tags: [upload]
+      summary: 取当前偏移(断点续传)
+      responses:
+        "200":
+          description: OK
+          headers:
+            Upload-Offset: { schema: { type: integer } }
+            Upload-Length: { schema: { type: integer } }
+
+  /api/v1/upload/{id}/finish:
+    post:
+      tags: [upload]
+      summary: 秒传定稿(免重传;证明未过 → 403 fast_upload_denied)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [nonce, sample_sha256]
+              properties:
+                nonce: { type: string }
+                sample_sha256:
+                  type: array
+                  items: { type: string }
+      responses:
+        "201":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UploadSimpleResult" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/v1/changes:
+    get:
+      tags: [sync]
+      summary: 增量变更流(超窗 → 409 cursor_expired → 全量清单)
+      parameters:
+        - { name: space, in: query, required: true, schema: { type: string } }
+        - { name: since, in: query, schema: { type: integer, format: int64, default: 0 } }
+        - name: limit
+          in: query
+          schema: { type: integer, maximum: 5000, default: 1000 }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ChangesPage" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "410": { $ref: "#/components/responses/SpaceRevoked" }
+
+  /api/v1/changes/head:
+    get:
+      tags: [sync]
+      summary: 当前最大 change_seq(首次同步的增量起点)
+      parameters:
+        - { name: space, in: query, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  space_id: { type: string }
+                  head_seq: { type: integer, format: int64 }
+
+  /api/v1/sync/cursors:
+    post:
+      tags: [sync]
+      summary: 上报游标(单维取 max;全局水位取 min)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [client_id, space_id, last_seq]
+              properties:
+                client_id: { type: string }
+                space_id: { type: string }
+                last_seq: { type: integer, format: int64 }
+      responses:
+        "200": { description: OK }
+
+  /api/v1/shares:
+    post:
+      tags: [shares]
+      summary: 创建分享链接(唯一免登录出口)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [file_id]
+              properties:
+                file_id: { type: string }
+                password: { type: string }
+                expires_in_hours: { type: integer }
+                max_downloads: { type: integer }
+      responses:
+        "201":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ShareCreated" }
+    get:
+      tags: [shares]
+      summary: 我创建的分享
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  shares:
+                    type: array
+                    items: { $ref: "#/components/schemas/ShareItem" }
+
+  /api/v1/shares/{id}:
+    delete:
+      tags: [shares]
+      summary: 吊销分享(幂等)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "204": { description: 已吊销 }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/shares/{token}/meta:
+    get:
+      tags: [shares]
+      summary: 落地页免登录查询(不回下载地址)
+      security: []
+      parameters:
+        - { name: token, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ShareMeta" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "410": { $ref: "#/components/responses/Gone" }
+
+  /api/v1/shares/{token}/download:
+    post:
+      tags: [shares]
+      summary: 免登录下载(POST 形态,密码走 body 或 query)
+      security: []
+      parameters:
+        - { name: token, in: path, required: true, schema: { type: string } }
+        - { name: password, in: query, schema: { type: string } }
+      responses:
+        "200": { description: 内容 }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "410": { $ref: "#/components/responses/Gone" }
+    get:
+      tags: [shares]
+      summary: 免登录下载(校验 token + 密码;计入下载次数)
+      security: []
+      parameters:
+        - { name: token, in: path, required: true, schema: { type: string } }
+        - { name: password, in: query, schema: { type: string } }
+      responses:
+        "200": { description: 内容 }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "410": { $ref: "#/components/responses/Gone" }
+
+  /api/v1/admin/departments:
+    get:
+      tags: [admin]
+      summary: 部门树(闭包表)
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/DepartmentNode" }
+    post:
+      tags: [admin]
+      summary: 新建部门
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string }
+                parent_id: { type: string }
+      responses:
+        "201": { description: OK }
+
+  /api/v1/admin/departments/{id}:
+    delete:
+      tags: [admin]
+      summary: 删除部门
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "204": { description: OK }
+
+  /api/v1/spaces:
+    get:
+      tags: [spaces]
+      summary: 我能看到的空间(服务端按权限过滤;协作界面第一屏)
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SpaceList" }
+    post:
+      tags: [spaces]
+      summary: 创建团队空间(一次事务里建 组 + 空间 + 根目录 + owner 的 manager 成员)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string }
+      responses:
+        "201":
+          description: 已创建
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SpaceView" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+  /api/v1/spaces/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    delete:
+      tags: [spaces]
+      summary: 解散团队空间(仅 owner;**硬删**,4.5 无回收站)
+      description: |
+        空间内必须已清空(除根目录外无条目),否则 409 并给出还需清掉的条目数。
+        硬删意味着 UI 必须二次确认(前端的解散要求手输空间名)。
+      responses:
+        "200":
+          description: 已解散
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  dissolved: { type: boolean }
+                  id: { type: string }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "410": { $ref: "#/components/responses/SpaceRevoked" }
+  /api/v1/spaces/{id}/transfer:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    post:
+      tags: [spaces]
+      summary: 转让空间所有权(仅 owner;按用户名或 id 指定新 owner)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                new_owner_id: { type: string }
+                new_owner_username:
+                  type: string
+                  description: 协作界面里人能输入的只有用户名,故服务端直接解析(见 resolveUser)
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: string }
+                  new_owner_id: { type: string }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/v1/spaces/{id}/members:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    get:
+      tags: [spaces]
+      summary: 成员列表
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MemberList" }
+        "410": { $ref: "#/components/responses/SpaceRevoked" }
+    post:
+      tags: [spaces]
+      summary: 邀请成员(与 PUT 同语义;按用户名或 id)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                user_id: { type: string }
+                username: { type: string }
+                permission: { type: string, description: manager / editor / reader }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MemberView" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [spaces]
+      summary: 新增或改权限(幂等;H5 与桌面端统一用 PUT)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                user_id: { type: string }
+                username: { type: string }
+                permission: { type: string }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MemberView" }
+  /api/v1/spaces/{id}/members/{userId}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+      - { name: userId, in: path, required: true, schema: { type: string } }
+    delete:
+      tags: [spaces]
+      summary: 移除成员(即时生效:下一个请求就被拒,不等 JWT 过期)
+      responses:
+        "204": { description: 已移除 }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /api/v1/spaces/{id}/leave:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    post:
+      tags: [spaces]
+      summary: 主动退出(owner 退出前必须转让 → 409)
+      responses:
+        "204": { description: 已退出 }
+        "409":
+          description: 你是所有者,必须先转让(否则空间会失去所有者)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/admin/spaces/{id}/freeze:
+    post:
+      tags: [admin]
+      summary: 冻结/解冻空间
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                frozen: { type: boolean }
+      responses:
+        "200": { description: OK }
+
+  /api/v1/admin/users:
+    get:
+      tags: [admin]
+      summary: 管理员列出用户
+      parameters:
+        - { name: search, in: query, required: false, schema: { type: string } }
+        - { name: role, in: query, required: false, schema: { type: string } }
+        - { name: status, in: query, required: false, schema: { type: string } }
+        - { name: limit, in: query, required: false, schema: { type: integer } }
+        - { name: offset, in: query, required: false, schema: { type: integer } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminUserListResult" }
+    post:
+      tags: [admin]
+      summary: 管理员创建用户(服务端生成凭据并建个人空间,不含密码)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AdminUserCreateRequest" }
+      responses:
+        "201":
+          description: 已创建
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminUserView" }
+        "400":
+          description: 非法参数(用户名为空/角色不合法)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: 用户名或邮箱冲突
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/admin/users/{id}:
+    patch:
+      tags: [admin]
+      summary: 管理员更新用户(角色/状态)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AdminUserUpdateRequest" }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminUserView" }
+        "400":
+          description: 非法参数(角色/状态不合法或无修改字段)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: 用户不存在
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/admin/spaces:
+    get:
+      tags: [admin]
+      summary: 管理员列出全部空间
+      parameters:
+        - { name: search, in: query, required: false, schema: { type: string } }
+        - { name: kind, in: query, required: false, schema: { type: string } }
+        - { name: frozen, in: query, required: false, schema: { type: boolean } }
+        - { name: limit, in: query, required: false, schema: { type: integer } }
+        - { name: offset, in: query, required: false, schema: { type: integer } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminSpaceListResult" }
+
+  /api/v1/admin/spaces/{id}/quota:
+    patch:
+      tags: [admin]
+      summary: 管理员设置空间配额与预警阈值
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SpaceQuotaRequest" }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SpaceQuotaResult" }
+        "400":
+          description: 非法参数(配额<0 / 预警越界 / 无修改字段)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: 空间不存在
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/admin/spaces/{id}/revoke:
+    post:
+      tags: [admin]
+      summary: 管理员收回空间(冻结并清空成员;文件不删)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SpaceRevokeResult" }
+        "404":
+          description: 空间不存在
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  responses:
+    BadRequest:
+      description: 参数非法
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Unauthorized:
+      description: 未认证/令牌无效(need_password=true 表示分享需要密码)
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Forbidden:
+      description: 无权限(含 fast_upload_denied / 锁被他人持有)
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    NotFound:
+      description: 不存在
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Conflict:
+      description: |
+        冲突(版本/重名/游标超窗/空间已满/目录任务进行中)。
+        `details.reason` 的可取值:version_conflict / name_conflict /
+        target_is_directory / root_protected / **dir_op_in_progress**
+        (后者表示该子树正在跑异步目录任务,客户端应提示"稍后再试"并刷新,
+        而不是重试 —— 重试必然还是 409,直到任务结束)。
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Gone:
+      description: 曾经存在、现在不可用(410:空间被移出/分享失效)
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    SpaceRevoked:
+      description: 空间被移出或解散(410;客户端必须保留本地数据)
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    QuotaExceeded:
+      description: 额度不足(507;storage_full 表示服务端磁盘水位)
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    RateLimited:
+      description: 被限速(带 Retry-After)
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+
+  schemas:
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code: { type: string }
+        message: { type: string }
+        details:
+          type: object
+          additionalProperties: true
+        request_id: { type: string }
+
+    VersionInfo:
+      type: object
+      required: [version]
+      properties:
+        version: { type: string }
+        min_client_version: { type: string }
+        api_contract: { type: string }
+
+    MeView:
+      type: object
+      required: [user_id, username, role, audience]
+      properties:
+        user_id: { type: string }
+        username: { type: string }
+        role: { type: string }
+        audience: { type: string }
+        request_id: { type: string }
+
+    LoginRequest:
+      type: object
+      required: [login, password]
+      properties:
+        login: { type: string }
+        password: { type: string }
+        audience:
+          type: string
+          description: 分端受众(R-14):web / h5 / desktop
+          enum: [web, h5, desktop]
+
+    TokenPair:
+      type: object
+      required: [access_token, refresh_token, token_type, expires_in, audience]
+      properties:
+        access_token: { type: string }
+        refresh_token: { type: string }
+        token_type: { type: string }
+        expires_in: { type: integer, format: int64 }
+        audience: { type: string }
+
+    LoginResult:
+      type: object
+      required: [token, user]
+      properties:
+        token: { $ref: "#/components/schemas/TokenPair" }
+        user: { $ref: "#/components/schemas/UserBrief" }
+        personal_space: { $ref: "#/components/schemas/SpaceBrief" }
+
+    UserBrief:
+      type: object
+      required: [id, username, role]
+      properties:
+        id: { type: string }
+        username: { type: string }
+        role: { type: string }
+        display_name: { type: string }
+
+    SpaceBrief:
+      type: object
+      required: [id, name]
+      properties:
+        id: { type: string }
+        name: { type: string }
+
+    # ---- 团队空间协作(4.3 / FE-W-11;H5 与桌面端**同一组**接口)----
+    #
+    # 为什么这几条曾经"实现了却没进契约"(DE-D-17 的契约交叉检查抓出来的):
+    # 服务端路由与 H5 页面先落地,契约表没同步 —— 于是**按契约开发的桌面端会发明接口**,
+    # 而"发明接口"的失败是静默的(404 或参数被忽略)。契约是唯一权威,漏一条就是漏一条。
+    SpaceView:
+      type: object
+      required: [id, kind, name, owner_id]
+      properties:
+        id: { type: string }
+        kind: { type: string, description: personal / team }
+        name: { type: string }
+        owner_id: { type: string }
+        quota_bytes: { type: integer, format: int64 }
+        used_bytes: { type: integer, format: int64 }
+        frozen: { type: boolean }
+        is_owner:
+          type: boolean
+          description: 仅供展示(客户端不得据此决定是否发请求;判权只在服务端)
+    MemberView:
+      type: object
+      required: [user_id, permission]
+      properties:
+        user_id: { type: string }
+        username: { type: string }
+        display_name: { type: string }
+        permission: { type: string, description: manager / editor / reader }
+    SpaceList:
+      type: object
+      required: [spaces, total]
+      properties:
+        spaces:
+          type: array
+          items: { $ref: "#/components/schemas/SpaceView" }
+        total: { type: integer }
+    MemberList:
+      type: object
+      required: [members, total]
+      properties:
+        members:
+          type: array
+          items: { $ref: "#/components/schemas/MemberView" }
+        total: { type: integer }
+
+    EntryView:
+      type: object
+      description: 文件/目录条目(6.4:必须带 version/etag/size/updated_at/mime)
+      required: [id, name, is_dir, size, version, etag, updated_at]
+      properties:
+        id: { type: string }
+        space_id: { type: string }
+        parent_id: { type: string }
+        name: { type: string }
+        is_dir: { type: boolean }
+        size: { type: integer, format: int64 }
+        mime_type: { type: string }
+        hash_sha256: { type: string }
+        version: { type: integer, format: int64 }
+        etag:
+          type: string
+          description: 已加引号的强 ETag(全项目唯一出口 quoteETag)
+        depth: { type: integer }
+        updated_at: { type: string }
+        created_at: { type: string }
+
+    FileListResult:
+      type: object
+      required: [space_id, parent_id, entries]
+      properties:
+        space_id: { type: string }
+        parent_id: { type: string }
+        entries:
+          type: array
+          items: { $ref: "#/components/schemas/EntryView" }
+        next_after:
+          type: string
+          description: 非空表示还有下一页,原样回传即可
+
+    DeleteResult:
+      type: object
+      required: [deleted_files, deleted_dirs, released_objects, freed_bytes, async]
+      properties:
+        deleted_files: { type: integer, format: int64 }
+        deleted_dirs: { type: integer, format: int64 }
+        released_objects:
+          type: integer
+          format: int64
+          description: 因引用归零而转入延迟删除的对象数(回收的物理对象数)
+        distinct_objects:
+          type: integer
+          format: int64
+          description: 子树内不同物理对象的个数(与 subtree-stats 的 object_refs 同口径)
+        freed_bytes: { type: integer, format: int64 }
+        task_id:
+          type: string
+          description: 非空 = 已转异步(6.11);此刻上面那些计数都是 0,真正结果去 /tasks/{id} 取
+        async: { type: boolean }
+
+    MoveResult:
+      type: object
+      description: |
+        移动的结果。同步完成时 `entry` 非空;超阈值转异步时只有 `task_id` ——
+        刻意用**同一个结构体**而不是两个接口:客户端只需判断 `async` 一个字段,
+        不必为"大目录"单独写一条调用路径。
+      required: [async]
+      properties:
+        entry:
+          $ref: "#/components/schemas/EntryView"
+        task_id: { type: string }
+        async:
+          type: boolean
+          description: true = 超阈值已转异步任务,客户端轮询 /api/v1/tasks/{id}
+
+    TaskStatus:
+      type: object
+      required: [id, kind, state, file_id, space_id, async, created_at]
+      properties:
+        id: { type: string }
+        kind:
+          type: string
+          enum: [move, delete]
+        state:
+          type: string
+          enum: [pending, running, done, failed]
+        file_id: { type: string, description: 子树根(delete 完成后该行已不存在) }
+        space_id: { type: string }
+        async: { type: boolean, description: 恒为 true(轮询接口不存在同步语义) }
+        name: { type: string }
+        is_dir: { type: boolean }
+        rows_affected: { type: integer, format: int64, description: 仅结束时返回 }
+        freed_bytes: { type: integer, format: int64, description: 仅结束时返回 }
+        released_objects: { type: integer, format: int64, description: 仅结束时返回 }
+        error_code: { type: string, description: 失败的稳定业务码(客户端按码分流) }
+        error_message: { type: string }
+        created_at: { type: string }
+        finished_at: { type: string }
+
+    SubtreeStats:
+      type: object
+      required: [file_id, is_dir, file_count, dir_count, total_size_bytes, object_refs, dedup_saved_bytes]
+      properties:
+        file_id: { type: string }
+        name: { type: string }
+        is_dir: { type: boolean }
+        file_count: { type: integer, format: int64 }
+        dir_count: { type: integer, format: int64 }
+        total_size_bytes: { type: integer, format: int64 }
+        object_refs: { type: integer, format: int64 }
+        dedup_saved_bytes: { type: integer, format: int64 }
+
+    CopyResult:
+      type: object
+      required: [copied_files, copied_dirs, object_refs_added, size_bytes]
+      properties:
+        root: { $ref: "#/components/schemas/EntryView" }
+        copied_files: { type: integer, format: int64 }
+        copied_dirs: { type: integer, format: int64 }
+        object_refs_added: { type: integer, format: int64 }
+        size_bytes: { type: integer, format: int64 }
+
+    LockView:
+      type: object
+      required: [file_id, holder_user_id, mine, expires_at]
+      properties:
+        file_id: { type: string }
+        holder_user_id: { type: string }
+        mine: { type: boolean }
+        expires_at: { type: string }
+
+    UploadCreateRequest:
+      type: object
+      required: [name, size]
+      properties:
+        space_id: { type: string }
+        parent_id: { type: string }
+        name: { type: string }
+        size: { type: integer, format: int64 }
+        allow_overwrite:
+          type: boolean
+          default: false
+          description: |
+            显式声明"这次上传要**覆盖**同目录同名文件"(默认 false = 同名直接 409 name_conflict)。
+            为什么必须显式:默认允许覆盖时,两个客户端同时向同名位置上传不同内容,后到者会
+            **静默覆盖**先到者 —— 用户看到"文件传上去了,内容却变了"(6.7 禁止静默覆盖)。
+            客户端只有在**自己已经判定过**"这是我的改动、且远端版本没有比我知道的更新"时
+            才该置 true;覆盖会让该 files 行的 version **原地 +1**(而不是新建一行)。
+        hash:
+          type: string
+          description: 客户端声明的 SHA-256(仅用于秒传预检,服务端定稿时重算)
+
+    FastUploadHint:
+      type: object
+      description: 预检命中的持物证明挑战(提示而非许可;挑战没过就要全量上传)
+      required: [nonce, sample_len, sample_offsets, expires_in_seconds]
+      properties:
+        nonce: { type: string }
+        sample_len: { type: integer, format: int64 }
+        sample_offsets:
+          type: array
+          items: { type: integer, format: int64 }
+        expires_in_seconds: { type: integer, format: int64 }
+
+    UploadCreateResult:
+      type: object
+      required: [upload_id, upload_ticket, expires_at, space_id, parent_id, name]
+      properties:
+        upload_id: { type: string }
+        upload_ticket:
+          type: string
+          description: 只在创建时返回一次(库内只存 SHA-256)
+        expires_at: { type: string }
+        space_id: { type: string }
+        parent_id: { type: string }
+        name: { type: string }
+        quota_after_bytes: { type: integer, format: int64 }
+        fast_upload: { $ref: "#/components/schemas/FastUploadHint" }
+
+    UploadSimpleResult:
+      type: object
+      required: [file, upload_id, deduped, new_file]
+      properties:
+        file: { $ref: "#/components/schemas/EntryView" }
+        upload_id: { type: string }
+        deduped: { type: boolean }
+        new_file: { type: boolean }
+        quota_after: { type: integer, format: int64 }
+        replayed:
+          type: boolean
+          description: 幂等重放(同一 upload 已定稿,直接回既有结果)
+
+    ChangeItem:
+      type: object
+      required: [change_seq, file_id, kind, version, parent_id]
+      properties:
+        change_seq: { type: integer, format: int64 }
+        file_id: { type: string }
+        kind:
+          type: string
+          enum: [created, updated, moved, deleted, shared_in]
+        version: { type: integer, format: int64 }
+        parent_id: { type: string }
+        name: { type: string }
+        old_parent_id:
+          type: string
+          description: 仅 moved 有值
+
+    ChangesPage:
+      type: object
+      required: [items, next_seq, has_more, space_id]
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/ChangeItem" }
+        next_seq: { type: integer, format: int64 }
+        has_more: { type: boolean }
+        space_id: { type: string }
+
+    ShareMeta:
+      type: object
+      required: [token, name, size, is_dir, need_password]
+      properties:
+        token: { type: string }
+        name: { type: string }
+        size: { type: integer, format: int64 }
+        is_dir: { type: boolean }
+        need_password: { type: boolean }
+        expires_at: { type: string }
+        download_count: { type: integer }
+        max_downloads: { type: integer }
+        mime_type: { type: string }
+
+    ShareCreated:
+      type: object
+      required: [id, token, file_id, need_password]
+      properties:
+        id: { type: string }
+        token: { type: string }
+        file_id: { type: string }
+        need_password: { type: boolean }
+        expires_at: { type: string }
+        max_downloads: { type: integer }
+        download_count: { type: integer }
+        path: { type: string }
+
+    ShareItem:
+      type: object
+      required: [id, token, file_id, need_password, revoked, download_count]
+      properties:
+        id: { type: string }
+        token: { type: string }
+        file_id: { type: string }
+        need_password: { type: boolean }
+        expires_at: { type: string }
+        revoked: { type: boolean }
+        download_count: { type: integer }
+        max_downloads: { type: integer }
+        name: { type: string }
+        size: { type: integer, format: int64 }
+        is_dir: { type: boolean }
+
+    DepartmentNode:
+      type: object
+      required: [id, name]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        parent_id: { type: string }
+        children:
+          type: array
+          items: { $ref: "#/components/schemas/DepartmentNode" }
+
+    # ---- 管理员治理:用户与空间(4.3 / FE-W-04 / FE-W-06)----
+
+    AdminUserView:
+      type: object
+      required: [id, username, display_name, role, status]
+      properties:
+        id: { type: string }
+        username: { type: string }
+        display_name: { type: string }
+        avatar_url: { type: string }
+        role: { type: string, description: super_admin / dept_admin / user }
+        status: { type: string, description: active / disabled / pending }
+        email: { type: string }
+        token_version: { type: integer, format: int64 }
+        created_at: { type: string }
+        updated_at: { type: string }
+        last_login_at: { type: string, nullable: true }
+
+    AdminUserListResult:
+      type: object
+      required: [users, total, limit, offset]
+      properties:
+        users:
+          type: array
+          items: { $ref: "#/components/schemas/AdminUserView" }
+        total: { type: integer }
+        limit: { type: integer }
+        offset: { type: integer }
+
+    AdminUserCreateRequest:
+      type: object
+      required: [username]
+      properties:
+        username: { type: string }
+        email: { type: string }
+        display_name: { type: string }
+        role: { type: string, description: super_admin / dept_admin / user;缺省 user }
+
+    AdminUserUpdateRequest:
+      type: object
+      properties:
+        role: { type: string, nullable: true, description: super_admin / dept_admin / user }
+        status: { type: string, nullable: true, description: active / disabled / pending }
+
+    AdminSpaceView:
+      type: object
+      required: [id, kind, name, owner_id, quota_bytes, used_bytes, frozen]
+      properties:
+        id: { type: string }
+        kind: { type: string, description: personal / team }
+        name: { type: string }
+        owner_id: { type: string }
+        owner_username: { type: string }
+        owner_display_name: { type: string }
+        quota_bytes: { type: integer, format: int64 }
+        used_bytes: { type: integer, format: int64 }
+        warn_percent: { type: integer }
+        used_percent: { type: number, format: double }
+        frozen: { type: boolean }
+        member_count: { type: integer }
+        files_count: { type: integer, format: int64 }
+        created_at: { type: string }
+
+    AdminSpaceListResult:
+      type: object
+      required: [spaces, total]
+      properties:
+        spaces:
+          type: array
+          items: { $ref: "#/components/schemas/AdminSpaceView" }
+        total: { type: integer }
+
+    SpaceQuotaRequest:
+      type: object
+      properties:
+        quota_bytes: { type: integer, format: int64, nullable: true, description: 字节;0=不限制;<0 拒绝 }
+        warn_percent: { type: integer, nullable: true, description: 1..100 }
+
+    SpaceQuotaResult:
+      type: object
+      required: [id, quota_bytes, used_bytes, warn_percent]
+      properties:
+        id: { type: string }
+        quota_bytes: { type: integer, format: int64 }
+        used_bytes: { type: integer, format: int64 }
+        warn_percent: { type: integer }
+
+    SpaceRevokeResult:
+      type: object
+      required: [id, frozen, members_removed]
+      properties:
+        id: { type: string }
+        frozen: { type: boolean }
+        members_removed: { type: integer }
+        note: { type: string, description: 已收回访问权(冻结并清空成员);空间内文件未删除 }
+
+security:
+  - bearerAuth: []
