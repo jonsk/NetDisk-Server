@@ -49,3 +49,7 @@ Thumbs.db
 .*.ps1
 .probe/
 .*probe*/
+
+# ---- 本地配置 / 项目元数据(不入库)----
+.workbuddy/
+netdisk-local.yaml

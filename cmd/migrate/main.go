@@ -50,6 +50,22 @@ func main() {
 		}
 		status, _ := migrate.Status(ctx, database.Pool)
 		fmt.Println("migrate up done;", status)
+
+		// 初始化数据库时自动建立初始管理员账号(幂等;admin/admin123,env 可覆盖)。
+		res, serr := migrate.SeedAdmin(ctx, database.Pool, migrate.SeedOptions{
+			Username: envOr("NETDISK_BOOTSTRAP_ADMIN_USERNAME", "admin"),
+			Password: envOr("NETDISK_BOOTSTRAP_ADMIN_PASSWORD", "admin123"),
+		})
+		if serr != nil {
+			fail(fmt.Errorf("播种初始管理员失败: %w", serr))
+		}
+		if res.Skipped {
+			fmt.Printf("initial admin %q already exists, skipped\n", res.Username)
+		} else if res.UsedDefaultPassword {
+			fmt.Printf("initial admin %q created (default password, please change ASAP)\n", res.Username)
+		} else {
+			fmt.Printf("initial admin %q created\n", res.Username)
+		}
 	case "status":
 		status, err := migrate.Status(ctx, database.Pool)
 		if err != nil {
@@ -64,4 +80,12 @@ func main() {
 func fail(err error) {
 	fmt.Fprintf(os.Stderr, "migrate: %v\n", err)
 	os.Exit(1)
+}
+
+// envOr 读环境变量,为空时返回默认值。
+func envOr(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
 }

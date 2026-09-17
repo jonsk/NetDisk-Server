@@ -130,7 +130,6 @@ func purgeUsers(ctx context.Context, pool *pgxpool.Pool, prefix string) (int64, 
 		{"部门成员关联", `DELETE FROM user_departments WHERE user_id IN (` + ids + `)`},
 		{"SSO 绑定", `DELETE FROM user_sso_bindings WHERE user_id IN (` + ids + `)`},
 		{"refresh 令牌", `DELETE FROM refresh_tokens WHERE user_id IN (` + ids + `)`},
-		{"审计日志", `DELETE FROM audit_logs WHERE user_id IN (` + ids + `)`},
 	}
 	for _, st := range steps {
 		if _, err := tx.Exec(ctx, st.sql, prefix+"%"); err != nil {

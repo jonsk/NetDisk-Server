@@ -1,6 +1,6 @@
 # deploy/ —— 部署物与运维脚本
 
-对应清单 **第 5 卷(DP-01~DP-04)**;本仓概览见 **`DOC/功能清单与开发任务清单.md`**,
+对应清单 **第 5 卷(DP-01~DP-04)**;本仓概览见 **`DOC/01-功能清单.md`**,
 操作步骤见 **`deploy/`** 下各子目录(provision 安装与部署 / backup 备份与恢复 / verify 故障与演练)。
 
 ```
@@ -12,7 +12,7 @@ deploy/
 │   ├── netdisk.service         通用生产基线(ProtectSystem=strict + ReadWritePaths)
 │   ├── 10-small-box.conf       drop-in:小内存机覆盖 MemoryMax=320M(机器差异留在机器上)
 │   └── secrets.env.example     有哪些键(不是键的值)
-├── provision/                  依赖安装与系统准备(PG 18 / Redis / WAL 归档路径)
+├── provision/                  依赖安装与系统准备(PG 17 / Redis / WAL 归档路径)
 ├── nginx/                      DP-01:站点 + 代理头 + http 调优 + apply.sh + verify.sh
 ├── backup/                     DP-04:备份/演练脚本 + systemd 单元与定时器
 ├── prometheus/                 DP-04:抓取配置 + 15 条告警规则

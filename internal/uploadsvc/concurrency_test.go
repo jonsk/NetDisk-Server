@@ -1,6 +1,6 @@
 package uploadsvc_test
 
-// TS-04 并发与竞态用例集(真实 PostgreSQL 18 + 真实本地存储 + miniredis 作为挑战存储)。
+// TS-04 并发与竞态用例集(真实 PostgreSQL 17 + 真实本地存储 + miniredis 作为挑战存储)。
 //
 // 三条纪律贯穿本文件:
 //

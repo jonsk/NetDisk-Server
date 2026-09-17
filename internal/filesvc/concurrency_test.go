@@ -1,6 +1,6 @@
 package filesvc_test
 
-// TS-04 并发与竞态用例集(filesvc 侧):真实 PostgreSQL 18 + 真实本地存储。
+// TS-04 并发与竞态用例集(filesvc 侧):真实 PostgreSQL 17 + 真实本地存储。
 //
 // 为什么验收点③④落在这个包而不是 uploadsvc:
 //   - 乐观锁 `base_version` 的裁决点在本包(filesvc.checkVersion / mapWriteErr);

@@ -68,6 +68,14 @@ func main() {
 	}
 }
 
+// envOr 读环境变量,为空时返回默认值(初始管理员播种的可配置入口)。
+func envOr(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
+}
+
 // objectStorager 汇总各服务对"对象存储"的全部能力需求。
 //
 // 为什么在 main.go 里定义一个本地接口,而不是直接用 `*storage.FS` 或 gostorage.Adapter:
@@ -152,6 +160,25 @@ func run() error {
 		}
 		status, _ := migrate.Status(ctx, database.Pool)
 		logger.Info("migrations applied", "status", status)
+
+		// 初始化数据库时自动建立初始管理员账号(幂等;admin/admin123,可用 env 覆盖)。
+		// 放在迁移之后:建表完成才播种,重复启动仅跳过不再覆盖。
+		if res, serr := migrate.SeedAdmin(ctx, database.Pool, migrate.SeedOptions{
+			Username: envOr("NETDISK_BOOTSTRAP_ADMIN_USERNAME", "admin"),
+			Password: envOr("NETDISK_BOOTSTRAP_ADMIN_PASSWORD", "admin123"),
+		}); serr != nil {
+			// 播种失败不算致命(可能已有同名用户或口令策略冲突),但要打日志暴露。
+			logger.Warn("初始化管理员账号播种失败", "err", serr)
+		} else if res.Skipped {
+			logger.Info("初始管理员已存在,跳过播种", "username", res.Username)
+		} else {
+			if res.UsedDefaultPassword {
+				logger.Warn("已创建初始管理员(使用默认口令,请尽快修改)",
+					"username", res.Username)
+			} else {
+				logger.Info("已创建初始管理员", "username", res.Username)
+			}
+		}
 	}
 
 	// 4) Redis(10.7:不可用时认证必须拒绝,故启动期直接失败)
