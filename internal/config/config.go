@@ -125,6 +125,9 @@ type Policy struct {
 type WebUI struct {
 	AdminPrefix    string `yaml:"admin_prefix"`
 	LandingPrefix  string `yaml:"landing_prefix"`
+	// AdminEnabled 管理后台开关:关闭后**不注册** /admin 静态页与全部 /api/v1/admin/* 路由,
+	// 该管理面完全不可达(404),用于规避 web 管理后台的网络攻击;客户端/业务 API 不受影响。
+	AdminEnabled   bool   `yaml:"admin_enabled"`
 }
 
 // Patrol 是对象泄漏/反向孤儿巡检(BE-S10-04 / 8.4)。
@@ -505,7 +508,7 @@ func Default() *Config {
 			QuotaDriftAlertBytes: 1 << 20,
 			QuotaDriftAutoFix:    true,
 		},
-		WebUI: WebUI{AdminPrefix: "/admin/", LandingPrefix: "/s/"},
+		WebUI: WebUI{AdminPrefix: "/admin/", LandingPrefix: "/s/", AdminEnabled: true},
 		// 8.4:对象巡检默认开启、每日一轮;抽样量按后端分级(BE-S10-04)
 		Patrol: Patrol{
 			Enabled:          true,

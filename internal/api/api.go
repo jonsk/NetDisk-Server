@@ -132,8 +132,12 @@ func New(d Deps) http.Handler {
 	// ---- 静态资源:/admin 由 Go embed 提供(ADR-4 / R-01 R-02)----
 	// 注意:只需注册 "/admin/{rest...}" —— 它同时匹配 "/admin/" 与更深路径;
 	// 若再注册 "/admin/" 会被 ServeMux 判定为模式冲突(启动即 panic,这是 6.8 期望的行为)。
-	admin := webui.Handler(d.Cfg.WebUI.AdminPrefix, "admin", true)
-	mux.Handle("GET "+d.Cfg.WebUI.AdminPrefix+"{rest...}", admin)
+	// AdminEnabled 开关(webui.admin_enabled):关闭则**整面(静态+API)不注册**,规避 web 管理攻击。
+	adminEnabled := d.Cfg.WebUI.AdminEnabled
+	if adminEnabled {
+		admin := webui.Handler(d.Cfg.WebUI.AdminPrefix, "admin", true)
+		mux.Handle("GET "+d.Cfg.WebUI.AdminPrefix+"{rest...}", admin)
+	}
 
 	// ---- 分享访客落地页 /s/ 由 Go embed 提供(与 /admin 同机制,独立站点)----
 	// 访客免登录面:展示文件名/大小/有效期/剩余次数/输密码/下载,均复用既有
@@ -162,7 +166,9 @@ func New(d Deps) http.Handler {
 		middleware.Auth(d.Tokens, auth.AudienceWeb), // H5 token 不得访问后台(2.7)
 		middleware.RequireRole("super_admin", "dept_admin"),
 	)
-	mux.Handle("GET /api/v1/admin/ping", adminOnly)
+	if adminEnabled {
+		mux.Handle("GET /api/v1/admin/ping", adminOnly)
+	}
 
 	// adminChain 是"web audience + 管理员角色"的统一链,供全部 /admin/* 使用。
 	//
@@ -175,19 +181,23 @@ func New(d Deps) http.Handler {
 
 	// ---- 组织架构(部门树)后台接口(BE-S3-01)----
 	// 组织树是权限的输入(它决定谁能看到哪些团队空间),不能让 H5/桌面端令牌改动。
-	mux.Handle("GET /api/v1/admin/departments", adminChain(d.handleDeptTree))
-	mux.Handle("POST /api/v1/admin/departments", adminChain(d.handleDeptCreate))
-	mux.Handle("DELETE /api/v1/admin/departments/{id}", adminChain(d.handleDeptDelete))
-	mux.Handle("GET /api/v1/admin/departments/{id}/subtree", adminChain(d.handleDeptSubtree))
-	// 重建闭包表:幂等,组织同步后调用(post 语义:它改变了派生索引)
-	mux.Handle("POST /api/v1/admin/departments/rebuild-closure", adminChain(d.handleDeptRebuild))
+	if adminEnabled {
+		mux.Handle("GET /api/v1/admin/departments", adminChain(d.handleDeptTree))
+		mux.Handle("POST /api/v1/admin/departments", adminChain(d.handleDeptCreate))
+		mux.Handle("DELETE /api/v1/admin/departments/{id}", adminChain(d.handleDeptDelete))
+		mux.Handle("GET /api/v1/admin/departments/{id}/subtree", adminChain(d.handleDeptSubtree))
+		// 重建闭包表:幂等,组织同步后调用(post 语义:它改变了派生索引)
+		mux.Handle("POST /api/v1/admin/departments/rebuild-closure", adminChain(d.handleDeptRebuild))
+	}
 
 	// ---- 用户管理后台接口(FE-W-04)----
 	// 与部门同理:用户与角色是权限的输入。停用会在服务层**立刻**吊销会话
 	// (吊销 refresh + 自增 token_version),不是"只改一个字段"。
-	mux.Handle("GET /api/v1/admin/users", adminChain(d.handleAdminUserList))
-	mux.Handle("POST /api/v1/admin/users", adminChain(d.handleAdminUserCreate))
-	mux.Handle("PATCH /api/v1/admin/users/{id}", adminChain(d.handleAdminUserUpdate))
+	if adminEnabled {
+		mux.Handle("GET /api/v1/admin/users", adminChain(d.handleAdminUserList))
+		mux.Handle("POST /api/v1/admin/users", adminChain(d.handleAdminUserCreate))
+		mux.Handle("PATCH /api/v1/admin/users/{id}", adminChain(d.handleAdminUserUpdate))
+	}
 
 	// ---- 上传任务(4.3 预留 + 6.10 单一上传通道)----
 	//
@@ -283,14 +293,18 @@ func New(d Deps) http.Handler {
 	// ---- 管理员治理(S3-07):与部门接口同一条 web+管理员 链 ----
 	// 冻结/解冻:走**治理**实现(直连仓储 + 审计),不依赖 spacesvc 的成员视角
 	// —— 管理员通常不是空间成员,用成员视角的服务会出现"冻结不了别人的空间"。
-	mux.Handle("POST /api/v1/admin/spaces/{id}/freeze", adminChain(d.handleAdminSpaceFreeze))
+	if adminEnabled {
+		mux.Handle("POST /api/v1/admin/spaces/{id}/freeze", adminChain(d.handleAdminSpaceFreeze))
+	}
 
 	// ---- 空间治理(FE-W-06 / 4.3)----
 	// 只做**全局治理**(配额/预警阈值/冻结/收回);创建/邀请/退出属协作管理,
 	// 入口在桌面端与 H5(4.3 决策)。
-	mux.Handle("GET /api/v1/admin/spaces", adminChain(d.handleAdminSpaceList))
-	mux.Handle("PATCH /api/v1/admin/spaces/{id}/quota", adminChain(d.handleAdminSpaceQuota))
-	mux.Handle("POST /api/v1/admin/spaces/{id}/revoke", adminChain(d.handleAdminSpaceRevoke))
+	if adminEnabled {
+		mux.Handle("GET /api/v1/admin/spaces", adminChain(d.handleAdminSpaceList))
+		mux.Handle("PATCH /api/v1/admin/spaces/{id}/quota", adminChain(d.handleAdminSpaceQuota))
+		mux.Handle("POST /api/v1/admin/spaces/{id}/revoke", adminChain(d.handleAdminSpaceRevoke))
+	}
 
 	// ---- TUS 上传协议(BE-S5-03:6.1 / 3.4)----
 	//
@@ -340,7 +354,11 @@ func New(d Deps) http.Handler {
 	// 不注册通配兜底后,未匹配路径由 ServeMux 返回 405(有 Allow)或 404,
 	// 两种响应体再由 middleware.StructuredErrors 统一转成结构化 JSON。
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
-		apierr.WriteOK(w, r, http.StatusOK, map[string]string{"service": "netdisk", "docs": "/admin/"})
+		body := map[string]string{"service": "netdisk"}
+		if adminEnabled {
+			body["docs"] = "/admin/"
+		}
+		apierr.WriteOK(w, r, http.StatusOK, body)
 	})
 
 	// 中间件顺序:requestID → realIP → structuredErrors → logging → recoverer
