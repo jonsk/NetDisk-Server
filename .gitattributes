@@ -1,0 +1,16 @@
+# 统一换行符:所有文本文件一律 LF(存库与检出都用 LF,Windows 亦不转 CRLF)
+# 配套仓库级配置:core.autocrlf=false / core.eol=lf
+* text=auto eol=lf
+
+# 二进制文件显式标记,避免 text=auto 误判损坏
+*.exe binary
+*.dll binary
+*.so binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
