@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/netdisk/netdisk/internal/api"
 	"github.com/netdisk/netdisk/internal/middleware"
 )
 
@@ -78,19 +79,53 @@ func TestUnmatchedPathIs404Not405(t *testing.T) {
 	}
 }
 
-// 根路径仍可访问(收窄兜底后不能连根都挂掉)
-func TestRootPathStillServed(t *testing.T) {
+// 根路径对外"隐身"(方案 A):不返回 service 名、不暴露 /admin/ 路径。
+//
+// httptest 的 ResponseRecorder 不实现 http.Hijacker,故测试里走到 204 空响应兜底;
+// 生产环境(真实 http.Server 的可 Hijack ResponseWriter)会劫持并直接断开连接
+// (浏览器表现为 ERR_EMPTY_RESPONSE/"页面打不开")。两种情形都不泄露任何内容。
+func TestRootPathHidden(t *testing.T) {
 	h, _ := newTestServer(t)
 	rec := get(h, "/", nil)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("GET / 应 200,实际 %d body=%s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("GET / 应 204(隐身),实际 %d body=%s", rec.Code, rec.Body.String())
 	}
-	var body map[string]string
-	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
-		t.Fatalf("根路径响应应为 JSON: %v", err)
+	if rec.Body.Len() != 0 {
+		t.Errorf("根路径不应返回任何内容,实际 %q", rec.Body.String())
 	}
-	if body["service"] != "netdisk" {
-		t.Errorf("应回服务名,实际 %v", body)
+}
+
+// 方案 C:`/admin`(无尾斜杠)显式 307 跳到 /admin/,且 /admin/ 本身仍由 embed 正常提供。
+func TestAdminNoSlashRedirects(t *testing.T) {
+	h, _ := newTestServer(t)
+	rec := get(h, "/admin", nil)
+	if rec.Code != http.StatusTemporaryRedirect {
+		t.Fatalf("GET /admin 应 307,实际 %d", rec.Code)
+	}
+	if loc := rec.Header().Get("Location"); loc != "/admin/" {
+		t.Errorf("Location 应为 /admin/,实际 %q", loc)
+	}
+	if admin := get(h, "/admin/", nil); admin.Code != http.StatusOK {
+		t.Errorf("GET /admin/ 应 200(embed),实际 %d", admin.Code)
+	}
+}
+
+// admin 关闭时,`/admin*` 整体隐身(同根路径):不 307、不回 JSON 404。
+// httptest 的 Recorder 不实现 Hijacker → 走到 204 空响应兜底,仍是无反馈。
+func TestAdminHiddenWhenDisabled(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.WebUI.AdminEnabled = false
+	tokens := newTokens(t, cfg)
+	h := api.New(api.Deps{Cfg: cfg, Log: testLogger(), Tokens: tokens})
+
+	for _, p := range []string{"/admin", "/admin/", "/admin/overview", "/admin/index.html"} {
+		rec := get(h, p, nil)
+		if rec.Code != http.StatusNoContent {
+			t.Errorf("%s 应 204(admin 关闭/隐身),got %d body=%s", p, rec.Code, rec.Body.String())
+		}
+		if rec.Body.Len() != 0 {
+			t.Errorf("%s 不应返回任何内容,got %q", p, rec.Body.String())
+		}
 	}
 }
 

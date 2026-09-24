@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -341,37 +342,72 @@ func New(d Deps) http.Handler {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	// ---- 根路径:避免暴露内部信息 ----
+	// ---- 根路径 `/`:对外"隐身"(方案 A) ----
 	//
-	// **这里刻意只注册精确的 "/",不再注册 "/" 通配兜底。**
+	// 不在 mux 里注册 `/`,而是在本函数末尾的"顶层入口"里按精确 `GET /` 拦截:
+	// 劫持并直接断开连接,浏览器表现为 ERR_EMPTY_RESPONSE("页面打不开"),
+	// 不返回 service 名、不暴露 /admin/、不做重定向。
 	//
-	// 原因(实测缺陷):注册 `mux.HandleFunc("/", ...)` 会匹配一切未命中路径,
-	// 于是"路径对、方法不对"的请求(POST /api/v1/files、DELETE /api/v1/version)
-	// 都会被这个兜底接走并返回 404 —— 把 ServeMux 内建的
-	// **405 + Allow** 语义彻底吞掉。客户端因此无法区分"接口不存在"与
-	// "接口存在但你用错了方法",排查方向会被带偏(典型的"明明有这接口却 404")。
-	//
-	// 不注册通配兜底后,未匹配路径由 ServeMux 返回 405(有 Allow)或 404,
-	// 两种响应体再由 middleware.StructuredErrors 统一转成结构化 JSON。
-	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
-		body := map[string]string{"service": "netdisk"}
-		if adminEnabled {
-			body["docs"] = "/admin/"
-		}
-		apierr.WriteOK(w, r, http.StatusOK, body)
-	})
+	// 仍刻意只匹配精确的 `GET /`(不注册 "/" 通配兜底):注册 `mux.HandleFunc("/", ...)`
+	// 会匹配一切未命中路径,把 ServeMux 内建的 **405 + Allow** 语义吞掉,
+	// 客户端无法区分"接口不存在"与"用错方法"。"顶层入口"只拦 `GET /` 精确路径,
+	// 其余方法/路径仍由 mux 正确返回 405/404。
+	// (根路径 `/` 的实际处理见本函数末尾的"顶层入口"。)
 
 	// 中间件顺序:requestID → realIP → structuredErrors → logging → recoverer
 	//
 	// StructuredErrors 必须在内层:它要能在 ServeMux 自己写出 405/404 之后
 	// 改写响应体,而 Logging/Recoverer 关注的是状态码,放在它外层即可。
-	return middleware.Chain(mux,
+	inner := middleware.Chain(mux,
 		middleware.RequestID(),
 		middleware.RealIP(d.Cfg.Server.TrustedProxies),
 		middleware.StructuredErrors(d.Log),
 		middleware.Logging(d.Log),
 		middleware.Recoverer(d.Log),
 	)
+
+	// 顶层入口:必须在中间件链"之前"拦截根路径与 admin 路径的隐身/跳转。
+	// 中间件链会把 w 包成 errWriter→recorder,二者均未实现 http.Hijacker,
+	// 若把劫持放在链内会静默退化成 204;只有在链外才能拿到可 Hijack 的原始 w。
+	stealth := func(w http.ResponseWriter) {
+		// 劫持并直接断开连接 → 浏览器表现为 ERR_EMPTY_RESPONSE("页面打不开")。
+		if hj, ok := w.(http.Hijacker); ok {
+			if conn, _, err := hj.Hijack(); err == nil {
+				conn.Close()
+				return
+			}
+		}
+		// 兜底(极少见:Hijacker 不可用时)返回空 204,仍是空白无提示
+		w.WriteHeader(http.StatusNoContent)
+	}
+
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			inner.ServeHTTP(w, r)
+			return
+		}
+		switch {
+		case r.URL.Path == "/":
+			// 方案 A:根路径对外隐身。不返回 service 名、不暴露 /admin/、不重定向。
+			stealth(w)
+		case r.URL.Path == "/admin" || strings.HasPrefix(r.URL.Path, "/admin/"):
+			if !adminEnabled {
+				// admin 关闭:/admin* 整体隐身 —— 不 307、不回 JSON 404,像"打不开"。
+				stealth(w)
+				return
+			}
+			if r.URL.Path == "/admin" {
+				// 方案 C(admin 开启时):/admin(无尾斜杠)显式 307 跳到 /admin/,
+				// 不依赖 ServeMux 自动 301 的隐性行为,也避免与 /admin/{rest...} 注册冲突(panic)。
+				http.Redirect(w, r, "/admin/", http.StatusTemporaryRedirect)
+				return
+			}
+			// admin 开启且 /admin/{rest...}:交给正常后台 handler。
+			inner.ServeHTTP(w, r)
+		default:
+			inner.ServeHTTP(w, r)
+		}
+	})
 }
 
 // 版本信息:由 CI 通过 -ldflags 注入(11 章:单一 tag 注入三端)
