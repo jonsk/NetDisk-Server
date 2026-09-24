@@ -1,10 +1,10 @@
 #!/bin/sh
-# 网盘部署 2/3:PostgreSQL 17(小内存适配 + WAL 归档 + 角色/库)
+# 网盘部署 2/3:PostgreSQL 15(小内存适配 + WAL 归档 + 角色/库)
 # 以 root 运行,可重复执行。
 set -eu
 . /etc/netdisk/secrets.env
 
-PGVER=17
+PGVER=15
 PGDATA=/var/lib/postgresql/$PGVER/main
 CONF=/etc/postgresql/$PGVER/main
 ARCHIVE_DIR=/var/lib/netdisk/pg_wal_archive

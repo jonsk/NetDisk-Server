@@ -54,7 +54,7 @@
                └──────────┘  └────────┘   └────────────┘
 ```
 
-- **PostgreSQL 17 (mindestens unterstützt)** —— einzige Metadaten-Engine (inkl. WAL-Archivierung); Primärschlüssel nutzt `gen_random_uuid()`, benötigt PG ≥ 17
+- **PostgreSQL 15 (mindestens unterstützt)** —— einzige Metadaten-Engine (inkl. WAL-Archivierung); Primärschlüssel nutzt `gen_random_uuid()`, benötigt PG ≥ 15
 - **Redis** —— Sitzung / Ratenbegrenzung / Task-Queue (`SKIP LOCKED`, keine MQ)
 - **Nginx** —— Reverse-Proxy, einzelner Port nach außen
 - Das Frontend des Verwaltungs-Backends wird nach `pnpm build` im `web`-Repo nach `internal/webui/dist/` kopiert und über **Go `embed`** ausgeliefert
@@ -80,7 +80,7 @@
 ### Voraussetzungen
 
 - Go 1.26+
-- PostgreSQL 17+ (mindestens 17; Datenbanken: `netdisk` / `netdisk_test`, `LC_COLLATE=C`)
+- PostgreSQL 15+ (mindestens 15; Datenbanken: `netdisk` / `netdisk_test`, `LC_COLLATE=C`)
 - Redis 7+ (`appendonly yes`, `noeviction`)
 - Nginx (Produktion)
 

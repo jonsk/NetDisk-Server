@@ -68,19 +68,19 @@ sudo bash deploy/install.sh /tmp/netdisk-<новая версия>-linux-amd64 h
 > Откат = установить обратно **предыдущий** бинарник и перезапустить (миграции обратно совместимы, добавочные, обычно не нужно откатывать БД).
 > Если служба ранее была остановлена лимитом из-за повторяющихся падений (`systemctl start` выдаёт «Start request repeated too quickly»), после устранения коренной причины сначала выполните `systemctl reset-failed netdisk`, затем запуск.
 
-### 3.2 Обновление мажорной версии PostgreSQL (например, 17→18)
+### 3.2 Обновление мажорной версии PostgreSQL (например, 15→16)
 
-> Базовая линия на локальной машине — 17; если на месте используется более ранняя версия (15/16) и нужно обновиться, используйте `pg_upgrade`. **Перед обновлением обязательно должна быть резервная копия, для которой проверена возможность восстановления**, поскольку при сбое `pg_upgrade` могут не подняться оба экземпляра — старый и новый.
+> Базовая линия на локальной машине — 15; если на месте используется более ранняя версия (14/16) и нужно обновиться, используйте `pg_upgrade`. **Перед обновлением обязательно должна быть резервная копия, для которой проверена возможность восстановления**, поскольку при сбое `pg_upgrade` могут не подняться оба экземпляра — старый и новый.
 
 ```sh
 systemctl stop netdisk                       # Сначала остановить приложение, чтобы избежать записи во время обновления
-su - postgres -c "/usr/lib/postgresql/17/bin/pg_dumpall > /var/backups/netdisk/pre-upgrade.sql"
-apt-get install -y postgresql-18             # Установить новую версию (источник PGDG)
-su - postgres -c "/usr/lib/postgresql/17/bin/pg_upgrade \
-  --old-datadir=/var/lib/postgresql/17/main --new-datadir=/var/lib/postgresql/18/main \
-  --old-bindir=/usr/lib/postgresql/17/bin --new-bindir=/usr/lib/postgresql/17/bin --check"
+su - postgres -c "/usr/lib/postgresql/15/bin/pg_dumpall > /var/backups/netdisk/pre-upgrade.sql"
+apt-get install -y postgresql-16             # Установить новую версию (источник PGDG)
+su - postgres -c "/usr/lib/postgresql/15/bin/pg_upgrade \
+  --old-datadir=/var/lib/postgresql/15/main --new-datadir=/var/lib/postgresql/16/main \
+  --old-bindir=/usr/lib/postgresql/15/bin --new-bindir=/usr/lib/postgresql/16/bin --check"
 # После прохождения --check уберите --check и повторите запуск, затем заново соберите статистику
-su - postgres -c "/usr/lib/postgresql/17/bin/vacuumdb --all --analyze-in-stages"
+su - postgres -c "/usr/lib/postgresql/15/bin/vacuumdb --all --analyze-in-stages"
 ```
 
 ---

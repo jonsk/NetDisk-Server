@@ -69,20 +69,20 @@ sudo bash deploy/install.sh /tmp/netdisk-<nouvelle version>-linux-amd64 http://<
 > Si le service a été arrêté par limitation suite à des crashes répétés (`systemctl start` renvoie « Start request repeated too quickly »),
 > après avoir corrigé la cause racine, faites d'abord `systemctl reset-failed netdisk` puis démarrez.
 
-### 3.2 Mise à niveau de la grande version PostgreSQL (ex. 17→18)
+### 3.2 Mise à niveau de la grande version PostgreSQL (ex. 15→16)
 
-> La base de référence locale est 17 ; si le terrain passe à une version majeure supérieure, utilisez `pg_upgrade`. **Une sauvegarde vérifiée restaurable est obligatoire avant la mise à niveau**,
+> La base de référence locale est 15 ; si le terrain passe à une version majeure supérieure, utilisez `pg_upgrade`. **Une sauvegarde vérifiée restaurable est obligatoire avant la mise à niveau**,
 > car en cas d'échec de `pg_upgrade`, les deux instances (ancienne et nouvelle) risquent de ne plus démarrer.
 
 ```sh
 systemctl stop netdisk                       # d'abord arrêter l'application, pour éviter les écritures pendant la mise à niveau
-su - postgres -c "/usr/lib/postgresql/17/bin/pg_dumpall > /var/backups/netdisk/pre-upgrade.sql"
-apt-get install -y postgresql-18             # installer la nouvelle version (source PGDG)
-su - postgres -c "/usr/lib/postgresql/17/bin/pg_upgrade \
-  --old-datadir=/var/lib/postgresql/17/main --new-datadir=/var/lib/postgresql/18/main \
-  --old-bindir=/usr/lib/postgresql/17/bin --new-bindir=/usr/lib/postgresql/17/bin --check"
+su - postgres -c "/usr/lib/postgresql/15/bin/pg_dumpall > /var/backups/netdisk/pre-upgrade.sql"
+apt-get install -y postgresql-16             # installer la nouvelle version (source PGDG)
+su - postgres -c "/usr/lib/postgresql/15/bin/pg_upgrade \
+  --old-datadir=/var/lib/postgresql/15/main --new-datadir=/var/lib/postgresql/16/main \
+  --old-bindir=/usr/lib/postgresql/15/bin --new-bindir=/usr/lib/postgresql/15/bin --check"
 # Après validation du --check, retirez --check et relancez, puis re-collectez les statistiques
-su - postgres -c "/usr/lib/postgresql/17/bin/vacuumdb --all --analyze-in-stages"
+su - postgres -c "/usr/lib/postgresql/15/bin/vacuumdb --all --analyze-in-stages"
 ```
 
 ---

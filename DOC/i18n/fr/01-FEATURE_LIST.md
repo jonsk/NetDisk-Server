@@ -12,7 +12,7 @@
 |---|---|
 | Nom | **Server-com** (version open source / Community) |
 | Nature | Distribution open source du **service backend (Go)** du système de netdisk ; contenu = code source du serveur + matériel de déploiement |
-| Stack technique | Go / PostgreSQL 17 / Redis / Nginx / stockage sur disque local |
+| Stack technique | Go / PostgreSQL 15 / Redis / Nginx / stockage sur disque local |
 | Capacités externes | Interface REST + téléversement TUS par reprise sur coupure + WebDAV + synchronisation SSE en temps réel |
 
 **Répertoires** : `internal/` (code cœur), `cmd/` (programmes en ligne de commande), `deploy/` (matériel de déploiement), `scripts/` (scripts auxiliaires), `DOC/` (documentation).
@@ -86,7 +86,7 @@ Server-com est un **backend de netdisk d'entreprise**, fournissant quatre types 
 ## IV. Forme de déploiement et d'exécution
 
 - **Binaire unique** : l'ensemble du service est compilé en un fichier exécutable, géré par systemd ; Nginx fait proxy inverse et HTTPS.
-- **Dépendances préalables** : PostgreSQL 17 + Redis (dépendances auth/limitation de débit, refus de démarrage s'ils sont indisponibles).
+- **Dépendances préalables** : PostgreSQL 15 + Redis (dépendances auth/limitation de débit, refus de démarrage s'ils sont indisponibles).
 - **Configuration** : fichier yaml + variables d'environnement ; **mots de passe/clés uniquement par variables d'environnement**, jamais écrits dans le yaml ni versionnés.
 - **Migration de base** : le service intègre les scripts de migration, exécutés automatiquement au déploiement.
 - **Front du back-office** : déjà `embed` dans le binaire, aucun répertoire front séparé à déployer.

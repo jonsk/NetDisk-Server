@@ -22,7 +22,7 @@ The community edition (Server-com) keeps only **password login + admin console**
 | Component | Role | Notes |
 |---|---|---|
 | **netdisk** (product of this repo) | Receives HTTP requests, processes business logic, reads/writes metadata and objects | A single binary carrying REST / WebDAV / TUS / SSE / the embedded admin console |
-| **PostgreSQL 17 (minimum supported)** | The sole metadata engine (everything — "directory entries / users / spaces / quotas" — lives here) | Includes WAL archiving for point-in-time recovery. **Minimum 17**: primary-key default uses `gen_random_uuid()` (built in since PG 13), so the version floor is not set by UUIDs; minimum is 17 (aligned with mainstream distro versions). Version requirements in [05-INSTALL.md](05-INSTALL.md) §1 |
+| **PostgreSQL 15 (minimum supported)** | The sole metadata engine (everything — "directory entries / users / spaces / quotas" — lives here) | Includes WAL archiving for point-in-time recovery. **Minimum 15**: primary-key default uses `gen_random_uuid()` (built in since PG 13), so the version floor is not set by UUIDs; minimum is 15 (aligned with mainstream distro versions). Version requirements in [05-INSTALL.md](05-INSTALL.md) §1 |
 | **Redis** | Sessions (tokens) / rate-limit windows / change-feed cursors / task queue | **Not a cache** — lose the tokens and everyone gets logged out |
 | **Nginx** | Reverse proxy, single port outward | Only needed in production; in development you can hit the app directly |
 

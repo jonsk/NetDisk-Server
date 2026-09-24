@@ -14,29 +14,29 @@
 Der gesamte Netzdatenträger ist ein **einzelnes Go-Binary** (`netdisk`), extern arbeiten nur vier Komponenten mit ihm zusammen:
 
 ```
-Nginx(80/443) ─Reverse-Proxy─▶ netdisk(:8080) ─▶ PostgreSQL 17 (:5432)
+Nginx(80/443) ─Reverse-Proxy─▶ netdisk(:8080) ─▶ PostgreSQL 15 (:5432)
                                                ─▶ Redis (:6379)
 ```
 
 | Komponente | Versionsanforderung | Installationsort |
 |---|---|---|
 | netdisk | Build-Erzeugnis des Repositories | lokaler Rechner `/opt/netdisk/` |
-| PostgreSQL | **mindestens 17** (siehe unten) | lokaler Rechner |
+| PostgreSQL | **mindestens 15** (siehe unten) | lokaler Rechner |
 | Redis | 7+ | lokaler Rechner |
 | Nginx | empfohlen 1.26+ | lokaler Rechner (Produktion) |
 
-> **Warum wird mindestens PostgreSQL 17 unterstützt?**
-> Der Standardwert des Primärschlüssels verwendet `gen_random_uuid()` (siehe Migrationsskript `00001_init.sql`) — das ist eine **ab PG 13 eingebaute** UUID-Generierungsfunktion, daher liegt die Untergrenze nicht an der UUID. Dieses Projekt legt die Mindestunterstützung auf **PG 17** fest (passend zur von gängigen Distributionen mitgelieferten Version), und das Architektur-Dokument ADR-1 stützt sich darauf. Vor Ort laufen auch 15/16 (gen_random_uuid ist kompatibel), aber Archivierungs- und Langzeit-Support-Strategie wird nach 17 gepflegt. Das System unterstützt derzeit nur diese eine Datenbank (keine Anbindung an MySQL usw.).
+> **Warum wird mindestens PostgreSQL 15 unterstützt?**
+> Der Standardwert des Primärschlüssels verwendet `gen_random_uuid()` (siehe Migrationsskript `00001_init.sql`) — das ist eine **ab PG 13 eingebaute** UUID-Generierungsfunktion, daher liegt die Untergrenze nicht an der UUID. Dieses Projekt legt die Mindestunterstützung auf **PG 15** fest (passend zur von gängigen Distributionen mitgelieferten Version), und das Architektur-Dokument ADR-1 stützt sich darauf. Vor Ort laufen auch 14/16 (gen_random_uuid ist kompatibel), aber Archivierungs- und Langzeit-Support-Strategie wird nach 15 gepflegt. Das System unterstützt derzeit nur diese eine Datenbank (keine Anbindung an MySQL usw.).
 
 ---
 
 ## 2. Installationsabhängigkeiten installieren
 
-> In diesem Schritt werden installiert: Backup-Werkzeug (borg/rsync), PostgreSQL 17, Redis, Nginx.
-> Wichtigster Punkt: **Das System-Repository von Debian 13 enthält von sich aus PostgreSQL 17**, was genau der Mindestunterstützungsversion dieses Projekts entspricht — einfach direkt installieren, **keine zusätzliche PGDG-Quelle nötig** (falls das lokale System-Repository eine niedrigere Version hat, z. B. Debian 12 liefert 15 mit, dann wie unten in den Handbefehlen PGDG für 17 hinzufügen).
+> In diesem Schritt werden installiert: Backup-Werkzeug (borg/rsync), PostgreSQL 15, Redis, Nginx.
+> Wichtigster Punkt: **Das System-Repository von Debian 12 enthält von sich aus PostgreSQL 15**, was genau der Mindestunterstützungsversion dieses Projekts entspricht — einfach direkt installieren, **keine zusätzliche PGDG-Quelle nötig** (falls das lokale System-Repository eine niedrigere Version hat, z. B. Debian 11 liefert 13 mit, dann wie unten in den Handbefehlen PGDG für 15 hinzufügen).
 
 ```sh
-# Dem Skript übergeben: installiert postgresql-17/redis/nginx/borg → stoppt Apache, gibt 80/443 frei
+# Dem Skript übergeben: installiert postgresql-15/redis/nginx/borg → stoppt Apache, gibt 80/443 frei
 sudo bash deploy/provision/01-install-packages.sh
 ```
 
@@ -45,11 +45,11 @@ Das Skript gibt die Versionsnummer jeder Komponente zur Bestätigung aus und dru
 > **Ohne Skript, Schritt für Schritt per Handbefehl** (entspricht `01-install-packages.sh`):
 
 ```sh
-# ① PostgreSQL 17 / Redis / Nginx / Backup-Werkzeug borg installieren
-#    (Debian 13 bringt PG17 mit, direkt installieren; PGDG-Quelle nur bei zu
+# ① PostgreSQL 15 / Redis / Nginx / Backup-Werkzeug borg installieren
+#    (Debian 12 bringt PG15 mit, direkt installieren; PGDG-Quelle nur bei zu
 #     niedriger Distro-Version nötig, siehe Hinweis unten)
 sudo apt-get update
-sudo apt-get install -y postgresql-17 redis-server nginx borgbackup
+sudo apt-get install -y postgresql-15 redis-server nginx borgbackup
 
 # ② Apache stoppen, um 80/443 freizugeben (nur falls Apache installiert ist)
 sudo systemctl disable --now apache2 2>/dev/null || echo 'Kein Apache, übersprungen'
@@ -126,7 +126,7 @@ sudo chmod 0640 /etc/netdisk/secrets.env
 sudo bash deploy/provision/03-provision-postgresql.sh
 ```
 
-Der Zweck der jeweiligen Konfiguration (alles nach `/etc/postgresql/17/main/conf.d/` geschrieben):
+Der Zweck der jeweiligen Konfiguration (alles nach `/etc/postgresql/15/main/conf.d/` geschrieben):
 
 | Konfiguration | Wert | Warum |
 |---|---|---|
@@ -144,7 +144,7 @@ Am Ende geschieht außerdem:
 
 ```sh
 # ① Tuning + WAL-Archivierung einschalten (nach conf.d schreiben, damit nicht beim nächsten Major-Upgrade überschrieben)
-sudo tee -a /etc/postgresql/17/main/conf.d/netdisk.conf >/dev/null <<'EOF'
+sudo tee -a /etc/postgresql/15/main/conf.d/netdisk.conf >/dev/null <<'EOF'
 listen_addresses = 'localhost'
 max_connections = 100
 shared_buffers = 128MB

@@ -12,7 +12,7 @@
 |---|---|
 | Name | **Server-com** (Open-Source-Version / Community) |
 | Charakter | Open-Source-Veröffentlichung des **Backend-Dienstes (Go)** des Cloud-Speicher-Systems; Inhalt = Server-Quellcode + Deployment-Material |
-| Tech-Stack | Go / PostgreSQL 17 / Redis / Nginx / lokaler Festplattenspeicher |
+| Tech-Stack | Go / PostgreSQL 15 / Redis / Nginx / lokaler Festplattenspeicher |
 | Externe Fähigkeiten | REST-Schnittstelle + TUS-Resumable-Upload + WebDAV + SSE-Echtzeit-Sync |
 
 **Verzeichnisse**: `internal/` (Kerncode), `cmd/` (Kommandozeilenprogramme), `deploy/` (Deployment-Material), `scripts/` (Hilfsskripte), `DOC/` (Dokumentation).
@@ -86,7 +86,7 @@ Server-com ist ein **Enterprise-Cloud-Speicher-Backend** und bietet nach außen 
 ## 4. Deployment- & Betriebsform
 
 - **Einzelbinaire**: der gesamte Dienst wird zu einer ausführbaren Datei kompiliert und von systemd verwaltet; Nginx übernimmt Reverse-Proxy und HTTPS.
-- **Voraussetzungen**: PostgreSQL 17 + Redis (Auth/Rate-Limit-Abhängigkeit, bei Nichtverfügbarkeit kein Start).
+- **Voraussetzungen**: PostgreSQL 15 + Redis (Auth/Rate-Limit-Abhängigkeit, bei Nichtverfügbarkeit kein Start).
 - **Konfiguration**: yaml-Datei + Umgebungsvariablen; **Passwörter/Schlüssel laufen nur über Umgebungsvariablen**, niemals in yaml oder ins Versions-Repository geschrieben.
 - **Datenbank-Migration**: der Dienst enthält Migrationsskripte, die beim Deployment automatisch ausgeführt werden.
 - **Admin-Backend-Frontend**: bereits in das Binaire `embed`det, keine separate Frontend-Verzeichnis-Bereitstellung nötig.

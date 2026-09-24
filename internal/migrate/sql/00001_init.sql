@@ -1,9 +1,9 @@
 -- +goose Up
 -- ============================================================================
 -- 00001_init.sql — 网盘系统初始 schema
--- 依据: 架构文档 V3.0 §6.4 元数据模型 + §4.1/4.2/4.3 + ADR-1(PG 17)
+-- 依据: 架构文档 V3.0 §6.4 元数据模型 + §4.1/4.2/4.3 + ADR-1(PG 15)
 -- 要点:
---   * PG 13+ 内置 gen_random_uuid() 作为主键默认值(降级至 PG17,弃用 PG18 专有的 uuidv7)
+--   * PG 13+ 内置 gen_random_uuid() 作为主键默认值(降级至 PG15,弃用 PG18 专有的 uuidv7)
 --   * files.etag 为 STORED 生成列,值**不含双引号**(引号由序列化层 quoteETag 统一加,R-21)
 --   * file_objects 四态 + 不变式 ref_count=0 ⟺ state<>'live'(R-06)
 --   * 目录内判重统一 (space_id, parent_id, lower(name)) 唯一索引(6.4 P2-2)

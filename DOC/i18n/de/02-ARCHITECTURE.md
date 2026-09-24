@@ -23,7 +23,7 @@ sowie den H5-Mobilkanal. Sie ist eine funktionale Teilmenge der kommerziellen Ed
 | Komponente | Funktion | Anmerkung |
 |---|---|---|
 | **netdisk** (Erzeugnis dieses Repositories) | Nimmt HTTP-Anfragen entgegen, verarbeitet die Geschäftslogik, liest/schreibt Metadaten und Objekte | Dasselbe Binary trägt REST / WebDAV / TUS / SSE / eingebettetes Verwaltungs-Backend |
-| **PostgreSQL 17 (mindestens unterstützt)** | Einzige Metadaten-Engine (alle „Verzeichniseinträge/Benutzer/Bereiche/Quoten" liegen hier) | Enthält WAL-Archivierung für Point-in-Time-Recovery. **Minimum 17**: Der Primärschlüssel-Standardwert nutzt `gen_random_uuid()` (seit PG 13 eingebaut), die Untergrenze liegt also nicht an der UUID; Minimum 17 (passend zu gängigen Distro-Versionen). Versionsanforderungen siehe 05-INSTALL.md §1 |
+| **PostgreSQL 15 (mindestens unterstützt)** | Einzige Metadaten-Engine (alle „Verzeichniseinträge/Benutzer/Bereiche/Quoten" liegen hier) | Enthält WAL-Archivierung für Point-in-Time-Recovery. **Minimum 15**: Der Primärschlüssel-Standardwert nutzt `gen_random_uuid()` (seit PG 13 eingebaut), die Untergrenze liegt also nicht an der UUID; Minimum 15 (passend zu gängigen Distro-Versionen). Versionsanforderungen siehe 05-INSTALL.md §1 |
 | **Redis** | Sitzungen (Token) / Ratelimit-Fenster / Change-Stream-Cursor / Task-Queue | **Kein Cache** – gehen die Token verloren, werden alle abgemeldet |
 | **Nginx** | Reverse-Proxy, ein einzelner nach außen gerichteter Port | Nur in Produktion nötig; in der Entwicklung ist der direkte Zugriff auf die Anwendung möglich |
 

@@ -69,20 +69,20 @@ sudo bash deploy/install.sh /tmp/netdisk-<new-version>-linux-amd64 http://<exter
 > If the service was rate-limited and stopped due to repeated crashes (`systemctl start` reports "Start request repeated too quickly"),
 > after fixing the root cause, first `systemctl reset-failed netdisk` then start.
 
-### 3.2 Upgrade a PostgreSQL major version (e.g. 17→18)
+### 3.2 Upgrade a PostgreSQL major version (e.g. 15→16)
 
-> The local baseline is 17; if the site upgrades to a higher major version, use `pg_upgrade`. **You must have a backup verified to be recoverable before upgrading**,
+> The local baseline is 15; if the site upgrades to a higher major version, use `pg_upgrade`. **You must have a backup verified to be recoverable before upgrading**,
 > because if `pg_upgrade` fails, both the old and new instances may fail to start.
 
 ```sh
 systemctl stop netdisk                       # stop the app first to avoid writes during upgrade
-su - postgres -c "/usr/lib/postgresql/17/bin/pg_dumpall > /var/backups/netdisk/pre-upgrade.sql"
-apt-get install -y postgresql-18             # install new version (PGDG source)
-su - postgres -c "/usr/lib/postgresql/17/bin/pg_upgrade \
-  --old-datadir=/var/lib/postgresql/17/main --new-datadir=/var/lib/postgresql/18/main \
-  --old-bindir=/usr/lib/postgresql/17/bin --new-bindir=/usr/lib/postgresql/17/bin --check"
+su - postgres -c "/usr/lib/postgresql/15/bin/pg_dumpall > /var/backups/netdisk/pre-upgrade.sql"
+apt-get install -y postgresql-16             # install new version (PGDG source)
+su - postgres -c "/usr/lib/postgresql/15/bin/pg_upgrade \
+  --old-datadir=/var/lib/postgresql/15/main --new-datadir=/var/lib/postgresql/16/main \
+  --old-bindir=/usr/lib/postgresql/15/bin --new-bindir=/usr/lib/postgresql/15/bin --check"
 # After --check passes, re-run without --check, then re-collect statistics
-su - postgres -c "/usr/lib/postgresql/17/bin/vacuumdb --all --analyze-in-stages"
+su - postgres -c "/usr/lib/postgresql/15/bin/vacuumdb --all --analyze-in-stages"
 ```
 
 ---

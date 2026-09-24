@@ -23,8 +23,8 @@
 # ============================================================================
 set -eu
 
-PG_BIN=/usr/lib/postgresql/17/bin
-PGVER=18
+PG_BIN=/usr/lib/postgresql/15/bin
+PGVER=15
 BASE_ROOT=/var/backups/netdisk/base
 RESTORE_DIR=/var/lib/postgresql/$PGVER/pitr-restore
 LOG=/var/backups/netdisk/logs/pitr-$(date +%F).log

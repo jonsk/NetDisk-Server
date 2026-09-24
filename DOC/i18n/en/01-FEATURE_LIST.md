@@ -12,7 +12,7 @@
 |---|---|
 | Name | **Server-com** (Open-Source Edition / Community) |
 | Nature | Open-source release of the netdisk system's **backend service (Go)**; content = server source + deployment artifacts |
-| Tech Stack | Go / PostgreSQL 17 / Redis / Nginx / local disk storage |
+| Tech Stack | Go / PostgreSQL 15 / Redis / Nginx / local disk storage |
 | External Capabilities | REST API + TUS resumable upload + WebDAV + SSE real-time sync |
 
 **Directories**: `internal/` (core code), `cmd/` (CLI programs), `deploy/` (deployment artifacts), `scripts/` (helper scripts), `DOC/` (docs).
@@ -86,7 +86,7 @@ Server-com is an **enterprise netdisk backend** that provides four types of capa
 ## IV. Deployment & Runtime Form
 
 - **Single Binary**: the entire service compiles into one executable, managed by systemd; Nginx handles reverse proxy and HTTPS.
-- **Prerequisites**: PostgreSQL 17 + Redis (auth/rate-limit dependencies; will not start if unavailable).
+- **Prerequisites**: PostgreSQL 15 + Redis (auth/rate-limit dependencies; will not start if unavailable).
 - **Configuration**: yaml file + environment variables; **passwords/secrets only via environment variables**, never written to yaml or committed to the repo.
 - **Database Migration**: the service embeds migration scripts, executed automatically at deployment.
 - **Admin Console Frontend**: already `embed`ded into the binary, no separate frontend directory deployment needed.

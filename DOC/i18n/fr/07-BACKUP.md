@@ -65,23 +65,23 @@ sudo /opt/netdisk/bin/netdisk-restore-drill.sh     # Enregistré dans /var/backu
 
 ```sh
 # ① Prendre une sauvegarde de base (sauvegarde physique, combinée au WAL pour « revenir dans le passé »)
-su - postgres -c "/usr/lib/postgresql/17/bin/pg_basebackup -D /var/backups/netdisk/base -Ft -z -X fetch"
+su - postgres -c "/usr/lib/postgresql/15/bin/pg_basebackup -D /var/backups/netdisk/base -Ft -z -X fetch"
 
 # ② Restaurer vers un « répertoire d'instance indépendant » (ne pas écraser les données de production)
-install -d -o postgres -g postgres -m 0700 /var/lib/postgresql/17/restore
-tar -xzf /var/backups/netdisk/base/base.tar.gz -C /var/lib/postgresql/17/restore
+install -d -o postgres -g postgres -m 0700 /var/lib/postgresql/15/restore
+tar -xzf /var/backups/netdisk/base/base.tar.gz -C /var/lib/postgresql/15/restore
 
 # ③ Écrire l'objectif de restauration (restaurer vers le moment 2026-09-12 19:53)
-cat >> /var/lib/postgresql/17/restore/postgresql.auto.conf <<'EOF'
+cat >> /var/lib/postgresql/15/restore/postgresql.auto.conf <<'EOF'
 restore_command = 'cp /var/lib/postgresql/wal_archive/%f %p'
 recovery_target_time = '2026-09-12 19:53:00+08'
 recovery_target_action = 'promote'
 EOF
-touch /var/lib/postgresql/17/restore/recovery.signal
-chown -R postgres:postgres /var/lib/postgresql/17/restore
+touch /var/lib/postgresql/15/restore/recovery.signal
+chown -R postgres:postgres /var/lib/postgresql/15/restore
 
 # ④ Démarrer l'instance de restauration sur un autre port (coexiste avec la production, ne touche pas la production)
-su - postgres -c "/usr/lib/postgresql/17/bin/pg_ctl -D /var/lib/postgresql/17/restore \
+su - postgres -c "/usr/lib/postgresql/15/bin/pg_ctl -D /var/lib/postgresql/15/restore \
   -o '-p 5433' -l /tmp/pitr.log start"
 su - postgres -c "psql -p 5433 -Atc 'SELECT count(*) FROM files' netdisk"
 ```

@@ -14,29 +14,29 @@
 The entire netdisk is a **single Go binary** (`netdisk`); only four external components cooperate with it:
 
 ```
-Nginx(80/443) ─rev-proxy─▶ netdisk(:8080) ─▶ PostgreSQL 17 (:5432)
+Nginx(80/443) ─rev-proxy─▶ netdisk(:8080) ─▶ PostgreSQL 15 (:5432)
                                           ─▶ Redis (:6379)
 ```
 
 | Component | Version requirement | Where installed |
 |---|---|---|
 | netdisk | built artifact of this repo | local `/opt/netdisk/` |
-| PostgreSQL | **minimum 17** (see below) | local |
+| PostgreSQL | **minimum 15** (see below) | local |
 | Redis | 7+ | local |
 | Nginx | 1.26+ recommended | local (production) |
+> **Why is the minimum supported PostgreSQL 15?**
 
-> **Why is the minimum supported PostgreSQL 17?**
-> The primary-key default uses `gen_random_uuid()` (see migration script `00001_init.sql`) — this is a UUID generation function **built in since PG 13**, so the version floor is not tied to UUIDs. This project sets the minimum support at **PG 17** (aligned with the versions bundled by current mainstream distros), and the architecture document's ADR-1 also takes this as the standard. On-site deployments on 15/16 will also run (gen_random_uuid is compatible), but the archival / long-term support policy is maintained at 17. The system currently supports only this one database (no MySQL, etc.).
+> The primary-key default uses `gen_random_uuid()` (see migration script `00001_init.sql`) — this is a UUID generation function **built in since PG 13**, so the version floor is not tied to UUIDs. This project sets the minimum support at **PG 15** (aligned with the versions bundled by current mainstream distros), and the architecture document's ADR-1 also takes this as the standard. On-site deployments on 14/16 will also run (gen_random_uuid is compatible), but the archival / long-term support policy is maintained at 15. The system currently supports only this one database (no MySQL, etc.).
 
 ---
 
 ## 2. Install Dependency Software
 
-> This step installs: the backup tools (borg/rsync), PostgreSQL 17, Redis, and Nginx.
-> Key point: **Debian 13's system repository ships PostgreSQL 17**, which exactly matches this project's minimum supported version — just install it directly, **no need to add the PGDG source** (if the on-site system repository is older, e.g. Debian 12 ships 15, then follow the manual commands below to add PGDG and install 17).
+> This step installs: the backup tools (borg/rsync), PostgreSQL 15, Redis, and Nginx.
+> Key point: **Debian 12's system repository ships PostgreSQL 15**, which exactly matches this project's minimum supported version — just install it directly, **no need to add the PGDG source** (if the on-site system repository is older, e.g. Debian 11 ships 13, then follow the manual commands below to add PGDG and install 15).
 
 ```sh
-# Let the script do it: install postgresql-17/redis/nginx/borg → disable Apache to free 80/443
+# Let the script do it: install postgresql-15/redis/nginx/borg → disable Apache to free 80/443
 sudo bash deploy/provision/01-install-packages.sh
 ```
 
@@ -45,11 +45,11 @@ The script prints each component's version number for confirmation, and finally 
 > **Without relying on the script — do it step by step with manual commands** (equivalent to `01-install-packages.sh`):
 
 ```sh
-# ① Install PostgreSQL 17 / Redis / Nginx / backup tool borg
-#    (Debian 13 ships PG17, install directly; only add the PGDG source first if the
+# ① Install PostgreSQL 15 / Redis / Nginx / backup tool borg
+#    (Debian 12 ships PG15, install directly; only add the PGDG source first if the
 #     system repo version is too low, see note below)
 sudo apt-get update
-sudo apt-get install -y postgresql-17 redis-server nginx borgbackup
+sudo apt-get install -y postgresql-15 redis-server nginx borgbackup
 
 # ② Disable Apache to free 80/443 (only needed if Apache is installed on this machine)
 sudo systemctl disable --now apache2 2>/dev/null || echo 'No Apache, skip'
@@ -126,7 +126,7 @@ sudo chmod 0640 /etc/netdisk/secrets.env
 sudo bash deploy/provision/03-provision-postgresql.sh
 ```
 
-The purpose of each configuration (all written into `/etc/postgresql/17/main/conf.d/`):
+The purpose of each configuration (all written into `/etc/postgresql/15/main/conf.d/`):
 
 | Config | Value | Why |
 |---|---|---|
@@ -144,7 +144,7 @@ Finally it also:
 
 ```sh
 # ① Tuning + enable WAL archiving (written into conf.d, so it survives the next major-version upgrade)
-sudo tee -a /etc/postgresql/17/main/conf.d/netdisk.conf >/dev/null <<'EOF'
+sudo tee -a /etc/postgresql/15/main/conf.d/netdisk.conf >/dev/null <<'EOF'
 listen_addresses = 'localhost'
 max_connections = 100
 shared_buffers = 128MB

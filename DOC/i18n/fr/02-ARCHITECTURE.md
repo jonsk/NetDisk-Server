@@ -23,7 +23,7 @@ L'édition communautaire (Server-com) ne conserve que la **connexion par mot de 
 | Composant | Rôle | Remarques |
 |---|---|---|
 | **netdisk** (produit de ce dépôt) | Reçoit les requêtes HTTP, traite les activités métier, lit et écrit les métadonnées et les objets | Un seul binaire prend en charge REST / WebDAV / TUS / SSE / le panneau d'administration intégré |
-| **PostgreSQL 17 (minimum pris en charge)** | Unique moteur de métadonnées (tous les « entrées de répertoire / utilisateurs / espaces / quotas » s'y trouvent) | Inclut l'archivage WAL pour la récupération à un point dans le temps. **Minimum 17** : la valeur par défaut de la clé primaire utilise `gen_random_uuid()` (intégré depuis PG 13), le plancher n'est donc pas fixé par l'UUID ; minimum 17 (aligné sur les versions des distributions). Exigences de version voir 05-INSTALL.md §1 |
+| **PostgreSQL 15 (minimum pris en charge)** | Unique moteur de métadonnées (tous les « entrées de répertoire / utilisateurs / espaces / quotas » s'y trouvent) | Inclut l'archivage WAL pour la récupération à un point dans le temps. **Minimum 15** : la valeur par défaut de la clé primaire utilise `gen_random_uuid()` (intégré depuis PG 13), le plancher n'est donc pas fixé par l'UUID ; minimum 15 (aligné sur les versions des distributions). Exigences de version voir 05-INSTALL.md §1 |
 | **Redis** | Sessions (token) / fenêtres de limitation de débit / curseur du flux de changements / file de tâches | **Ce n'est pas un cache** : si les tokens sont perdus, tous les utilisateurs sont déconnectés |
 | **Nginx** | Proxy inverse, un seul port exposé | Nécessaire uniquement en production ; en développement, on peut accéder directement à l'application |
 

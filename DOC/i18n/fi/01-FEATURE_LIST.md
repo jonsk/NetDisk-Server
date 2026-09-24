@@ -12,7 +12,7 @@
 |---|---|
 | Nimi | **Server-com** (avoimen lähdekoodin versio / Community) |
 | Luonne | verkkolevylinjärjestelmän **taustapalvelun (Go)** avoin julkaisu; sisältö = palvelinpuolen lähdekoodi + käyttöönottomateriaali |
-| Teknologiapino | Go / PostgreSQL 17 / Redis / Nginx / paikallinen levytallennus |
+| Teknologiapino | Go / PostgreSQL 15 / Redis / Nginx / paikallinen levytallennus |
 | Ulospäin suunnatut kyvyt | REST-rajapinta + TUS jatkuva lataus + WebDAV + SSE reaaliaikainen synkronointi |
 
 **Hakemistot:** `internal/` (ydinkoodi), `cmd/` (komentoriviohjelmat), `deploy/` (käyttöönottomateriaali), `scripts/` (apuskriptit), `DOC/` (dokumentaatio).
@@ -87,7 +87,7 @@ Server-com on **yritysverkkolevyn taustapalvelu**, joka tarjoaa ulospäin neljä
 ## IV. Käyttöönotto- ja suoritusmuoto
 
 - **Yksi binääri**: koko palvelu käännetään yhdeksi suoritettavaksi tiedostoksi, jota systemd hallinnoi; Nginx toimii käänteisenä välityspalvelimena ja HTTPS:nä.
-- **Esivaatimukset**: PostgreSQL 17 + Redis (todennus/nopeusrajoitus riippuvuus, ei käynnisty jos ei saatavilla).
+- **Esivaatimukset**: PostgreSQL 15 + Redis (todennus/nopeusrajoitus riippuvuus, ei käynnisty jos ei saatavilla).
 - **Kokoonpano**: yaml-tiedosto + ympäristömuuttujat; **salasanat/avaimet kulkevat vain ympäristömuuttujien kautta**, eivät koskaan yaml-tiedostoon tai versionhallintaan.
 - **Tietokannan migraatio**: palvelu sisältää migraatioskriptit, jotka suoritetaan automaattisesti käyttöönoton yhteydessä.
 - **Ylläpaneelin frontend**: on `embed`-attu binääriin, erillistä frontend-hakemistoa ei tarvitse käyttöönottaa.

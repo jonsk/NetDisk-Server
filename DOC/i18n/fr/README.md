@@ -53,7 +53,7 @@
                └──────────┘  └────────┘   └────────────┘
 ```
 
-- **PostgreSQL 17 (minimum pris en charge)** —— unique moteur de métadonnées (avec archivage WAL) ; la clé primaire utilise `gen_random_uuid()`, nécessite PG ≥ 17
+- **PostgreSQL 15 (minimum pris en charge)** —— unique moteur de métadonnées (avec archivage WAL) ; la clé primaire utilise `gen_random_uuid()`, nécessite PG ≥ 15
 - **Redis** —— sessions / limitation de débit / file de tâches (`SKIP LOCKED`, sans MQ)
 - **Nginx** —— proxy inverse, port unique exposé
 - Le front du panneau d'administration est copié dans `internal/webui/dist/` après `pnpm build` du dépôt `web`, servi par **Go `embed`**
@@ -79,7 +79,7 @@
 ### Prérequis
 
 - Go 1.26+
-- PostgreSQL 17+ (minimum 17 ; bases : `netdisk` / `netdisk_test`, `LC_COLLATE=C`)
+- PostgreSQL 15+ (minimum 15 ; bases : `netdisk` / `netdisk_test`, `LC_COLLATE=C`)
 - Redis 7+ (`appendonly yes`, `noeviction`)
 - Nginx (production)
 

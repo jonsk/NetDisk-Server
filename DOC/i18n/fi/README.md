@@ -53,7 +53,7 @@
                └──────────┘  └────────┘   └────────────┘
 ```
 
-- **PostgreSQL 17（vähimmäistuki）** —— ainoa metatietokoneisto (sisältää WAL-arkistoinnin); perusavain käyttää `gen_random_uuid()`, vaatii PG ≥ 17
+- **PostgreSQL 15（vähimmäistuki）** —— ainoa metatietokoneisto (sisältää WAL-arkistoinnin); perusavain käyttää `gen_random_uuid()`, vaatii PG ≥ 15
 - **Redis** —— istunto / nopeusrajoitus / tehtäväjono (`SKIP LOCKED`, ei MQ:ta)
 - **Nginx** —— käänteinen välityspalvelin, yksi portti ulospäin
 - Ylläpitoikkunan käyttöliittymä kopioidaan `web`-repo:n `pnpm build`:n jälkeen kansioon `internal/webui/dist/`, ja sen tarjoaa **Go `embed`**
@@ -79,7 +79,7 @@
 ### Esivaatimukset
 
 - Go 1.26+
-- PostgreSQL 17 (tietokannat: `netdisk` / `netdisk_test`, `LC_COLLATE=C`)
+- PostgreSQL 15 (tietokannat: `netdisk` / `netdisk_test`, `LC_COLLATE=C`)
 - Redis 7+ (`appendonly yes`, `noeviction`)
 - Nginx (tuotanto)
 

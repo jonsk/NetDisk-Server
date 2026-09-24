@@ -53,7 +53,7 @@
                └──────────┘  └────────┘   └────────────┘
 ```
 
-- **PostgreSQL 17 (minimum supported)** —— the sole metadata engine (with WAL archiving); primary keys use `gen_random_uuid()`, requiring PG ≥ 17
+- **PostgreSQL 15 (minimum supported)** —— the sole metadata engine (with WAL archiving); primary keys use `gen_random_uuid()`, requiring PG ≥ 15
 - **Redis** —— sessions / rate limiting / task queue (`SKIP LOCKED`, no MQ introduced)
 - **Nginx** —— reverse proxy, single port exposed
 - The admin console frontend is copied into `internal/webui/dist/` after `web` repo `pnpm build`, served by **Go `embed`**
@@ -79,7 +79,7 @@
 ### Prerequisites
 
 - Go 1.26+
-- PostgreSQL 17+ (minimum 17; db: `netdisk` / `netdisk_test`, `LC_COLLATE=C`)
+- PostgreSQL 15+ (minimum 15; db: `netdisk` / `netdisk_test`, `LC_COLLATE=C`)
 - Redis 7+ (`appendonly yes`, `noeviction`)
 - Nginx (production)
 

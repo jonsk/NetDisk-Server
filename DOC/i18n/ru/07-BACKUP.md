@@ -61,23 +61,23 @@ sudo /opt/netdisk/bin/netdisk-restore-drill.sh     # Записывается в
 
 ```sh
 # ① Получить базовую резервную копию (физическая копия, в сочетании с WAL позволяет «вернуться в прошлое»)
-su - postgres -c "/usr/lib/postgresql/17/bin/pg_basebackup -D /var/backups/netdisk/base -Ft -z -X fetch"
+su - postgres -c "/usr/lib/postgresql/15/bin/pg_basebackup -D /var/backups/netdisk/base -Ft -z -X fetch"
 
 # ② Восстановить в «каталог независимого экземпляра» (не перезаписывать продакшен-данные)
-install -d -o postgres -g postgres -m 0700 /var/lib/postgresql/17/restore
-tar -xzf /var/backups/netdisk/base/base.tar.gz -C /var/lib/postgresql/17/restore
+install -d -o postgres -g postgres -m 0700 /var/lib/postgresql/15/restore
+tar -xzf /var/backups/netdisk/base/base.tar.gz -C /var/lib/postgresql/15/restore
 
 # ③ Записать цель восстановления (восстановление до момента 2026-09-12 19:53)
-cat >> /var/lib/postgresql/17/restore/postgresql.auto.conf <<'EOF'
+cat >> /var/lib/postgresql/15/restore/postgresql.auto.conf <<'EOF'
 restore_command = 'cp /var/lib/postgresql/wal_archive/%f %p'
 recovery_target_time = '2026-09-12 19:53:00+08'
 recovery_target_action = 'promote'
 EOF
-touch /var/lib/postgresql/17/restore/recovery.signal
-chown -R postgres:postgres /var/lib/postgresql/17/restore
+touch /var/lib/postgresql/15/restore/recovery.signal
+chown -R postgres:postgres /var/lib/postgresql/15/restore
 
 # ④ Запустить экземпляр восстановления на другом порту (сосуществует с продакшеном, не трогает продакшен)
-su - postgres -c "/usr/lib/postgresql/17/bin/pg_ctl -D /var/lib/postgresql/17/restore \
+su - postgres -c "/usr/lib/postgresql/15/bin/pg_ctl -D /var/lib/postgresql/15/restore \
   -o '-p 5433' -l /tmp/pitr.log start"
 su - postgres -c "psql -p 5433 -Atc 'SELECT count(*) FROM files' netdisk"
 ```

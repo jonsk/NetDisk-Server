@@ -52,7 +52,7 @@
                └──────────┘  └────────┘   └────────────┘
 ```
 
-- **PostgreSQL 17（最低支持）** —— 唯一元数据引擎（含 WAL 归档）；主键用 `gen_random_uuid()`，需 PG ≥ 17
+- **PostgreSQL 15（最低支持）** —— 唯一元数据引擎（含 WAL 归档）；主键用 `gen_random_uuid()`，需 PG ≥ 15
 - **Redis** —— 会话 / 限速 / 任务队列（`SKIP LOCKED`，不引入 MQ）
 - **Nginx** —— 反向代理，单端口对外
 - 管理后台前端经 `web` 仓 `pnpm build` 后拷入 `internal/webui/dist/`，由 **Go `embed`** 提供
@@ -78,7 +78,7 @@
 ### 前置要求
 
 - Go 1.26+
-- PostgreSQL 17+（最低 17；库：`netdisk` / `netdisk_test`，`LC_COLLATE=C`）
+- PostgreSQL 15+（最低 15；库：`netdisk` / `netdisk_test`，`LC_COLLATE=C`）
 - Redis 7+（`appendonly yes`，`noeviction`）
 - Nginx（生产）
 

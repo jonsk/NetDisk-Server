@@ -22,7 +22,7 @@ Yhteisöversio (Server-com) säilyttää vain **salasanalogon + hallintapaneelin
 | Komponentti | Tehtävä | Huomautukset |
 |---|---|---|
 | **netdisk** (tämän arkiston tuote) | vastaanottaa HTTP-pyyntöjä, käsitellä liiketoimintaa, lukea/kirjoittaa metatietoja ja objekteja | sama binääri sisältää REST / WebDAV / TUS / SSE / upotetun hallintapaneelin |
-| **PostgreSQL 17 (vähimmäistuki)** | ainoa metatietokone (kaikki "hakemistorivit / käyttäjät / tilat / kiintiöt" ovat tässä) | sisältää WAL-arkistoinnin ajankohtaista palautusta varten. **Vähintään 17**: perusavaimen oletusarvo käyttää `gen_random_uuid()` (sisäänrakennettu PG 13:sta), joten alaraja ei määräydy UUID:stä; vähintään 17 (tasattuna valtavirran jakeluversioihin). Versiovaatimukset ks. `05-INSTALL.md` §1 |
+| **PostgreSQL 15 (vähimmäistuki)** | ainoa metatietokone (kaikki "hakemistorivit / käyttäjät / tilat / kiintiöt" ovat tässä) | sisältää WAL-arkistoinnin ajankohtaista palautusta varten. **Vähintään 15**: perusavaimen oletusarvo käyttää `gen_random_uuid()` (sisäänrakennettu PG 13:sta), joten alaraja ei määräydy UUID:stä; vähintään 15 (tasattuna valtavirran jakeluversioihin). Versiovaatimukset ks. `05-INSTALL.md` §1 |
 | **Redis** | istunnot (token) / nopeusrajoitusikkunat / muutosvirran kohdistimet / tehtäväjono | **ei ole välimuisti**; jos tokenit katoavat, kaikki kirjautuvat ulos |
 | **Nginx** | käänteinen välityspalvelin, yksi portti ulospäin | tarvitaan vain tuotannossa; kehityksessä sovellukseen voi käyttää suoraan |
 

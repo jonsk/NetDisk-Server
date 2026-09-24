@@ -10,29 +10,29 @@
 Koko verkkolevy on **yksi Go-binääri** (`netdisk`), ja sen ulkopuolella on vain neljä komponenttia, jotka tukevat sitä:
 
 ```
-Nginx(80/443) ─反代─▶ netdisk(:8080) ─▶ PostgreSQL 17 (:5432)
+Nginx(80/443) ─反代─▶ netdisk(:8080) ─▶ PostgreSQL 15 (:5432)
                                       ─▶ Redis (:6379)
 ```
 
 | Komponentti | Versiovaatimus | Missä asennettuna |
 |---|---|---|
 | netdisk | repositorion koontituote | paikallinen `/opt/netdisk/` |
-| PostgreSQL | **vähintään 17** (ks. alla) | paikallinen |
+| PostgreSQL | **vähintään 15** (ks. alla) | paikallinen |
 | Redis | 7+ | paikallinen |
 | Nginx | suositus 1.26+ | paikallinen (tuotanto) |
 
-> **Miksi PostgreSQL 17 on vähimmäisvaatimus?**
-> Perusavaimen oletusarvo käyttää `gen_random_uuid()`-funktiota (ks. migraatioskripti `00001_init.sql`) — se on **PostgreSQL 13:sta lähtien sisäänrakennettu** UUID-funktio. Versioraja ei siis määräydy UUID:n luonnista. Tämä projekti asettaa vähimmäistukiversioksi **PG 17** (tasattuna valtavirran jakeluversioihin); myös arkkitehtuuridokumentin ADR-1 noudattaa tätä. 15/16-ympäristöt toimivat myös (gen_random_uuid on yhteensopiva), mutta arkistointi-/pitkäaikaistukipolitiikkaa ylläpidetään versiossa 17. Järjestelmä tukee tällä hetkellä vain tätä yhtä tietokantaa (ei yhdistä MySQL:iin tms.).
+> **Miksi PostgreSQL 15 on vähimmäisvaatimus?**
+> Perusavaimen oletusarvo käyttää `gen_random_uuid()`-funktiota (ks. migraatioskripti `00001_init.sql`) — se on **PostgreSQL 13:sta lähtien sisäänrakennettu** UUID-funktio. Versioraja ei siis määräydy UUID:n luonnista. Tämä projekti asettaa vähimmäistukiversioksi **PG 15** (tasattuna valtavirran jakeluversioihin); myös arkkitehtuuridokumentin ADR-1 noudattaa tätä. 14/16-ympäristöt toimivat myös (gen_random_uuid on yhteensopiva), mutta arkistointi-/pitkäaikaistukipolitiikkaa ylläpidetään versiossa 15. Järjestelmä tukee tällä hetkellä vain tätä yhtä tietokantaa (ei yhdistä MySQL:iin tms.).
 
 ---
 
 ## 2. Riippuvuusohjelmistojen asennus
 
-> Tässä vaiheessa asennetaan: varmuuskopiointityökalut (borg/rsync), PostgreSQL 17, Redis, Nginx.
-> Avainkohta: **Debian 13:n oma varasto toimittaa täsmälleen PostgreSQL 17:n**, mikä täyttää tämän projektin vähimmäisvaatimuksen — asenna suoraan, **PGDG-lähdettä ei tarvita** (vain jos jakelun varastoversio on vanhempi, esim. Debian 12 versiolla 15, lisää PGDG alla olevilla manuaalisilla komennoilla saadaksesi 17).
+> Tässä vaiheessa asennetaan: varmuuskopiointityökalut (borg/rsync), PostgreSQL 15, Redis, Nginx.
+> Avainkohta: **Debian 12:n oma varasto toimittaa täsmälleen PostgreSQL 15:n**, mikä täyttää tämän projektin vähimmäisvaatimuksen — asenna suoraan, **PGDG-lähdettä ei tarvita** (vain jos jakelun varastoversio on vanhempi, esim. Debian 11 versiolla 13, lisää PGDG alla olevilla manuaalisilla komennoilla saadaksesi 15).
 
 ```sh
-# Hoidetaan skriptillä: asenna postgresql-17/redis/nginx/borg → poista Apache käytöstä vapauttaaksesi 80/443
+# Hoidetaan skriptillä: asenna postgresql-15/redis/nginx/borg → poista Apache käytöstä vapauttaaksesi 80/443
 sudo bash deploy/provision/01-install-packages.sh
 ```
 
@@ -41,11 +41,11 @@ Skripti tulostaa jokaisen komponentin version vahvistukseksi ja lopuksi tulostaa
 > **Ei skriptiä — vaihe vaiheelta manuaalisilla komennoilla** (vastaa `01-install-packages.sh`):
 
 ```sh
-# ① Asenna PostgreSQL 17 / Redis / Nginx / varmuuskopiointityökalu borg
-#    (Debian 13 tuo PG17:n, asenna suoraan; PGDG-lähde vain jos jakelun
+# ① Asenna PostgreSQL 15 / Redis / Nginx / varmuuskopiointityökalu borg
+#    (Debian 12 tuo PG15:n, asenna suoraan; PGDG-lähde vain jos jakelun
 #     varastoversio on liian vanha — huomautus alla)
 sudo apt-get update
-sudo apt-get install -y postgresql-17 redis-server nginx borgbackup
+sudo apt-get install -y postgresql-15 redis-server nginx borgbackup
 
 # ② Poista Apache käytöstä vapauttaaksesi 80/443 (vain jos Apache on asennettu)
 sudo systemctl disable --now apache2 2>/dev/null || echo 'Ei Apachea, ohitettu'
@@ -95,7 +95,7 @@ Mitä se tarkalleen tekee (kaikki voidaan varmistaa `ls`-tuloksia vastaan):
 sudo bash deploy/provision/03-provision-postgresql.sh
 ```
 
-Kunkin kokoonpanon tarkoitus (kaikki kirjoitettiin tiedostoon `/etc/postgresql/17/main/conf.d/`):
+Kunkin kokoonpanon tarkoitus (kaikki kirjoitettiin tiedostoon `/etc/postgresql/15/main/conf.d/`):
 
 | Kokoonpano | Arvo | Miksi |
 |---|---|---|
