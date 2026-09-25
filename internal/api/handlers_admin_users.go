@@ -29,6 +29,7 @@ type adminUserCreateRequest struct {
 	Email       string `json:"email"`
 	DisplayName string `json:"display_name"`
 	Role        string `json:"role"`
+	Phone       string `json:"phone"`
 }
 
 type adminUserUpdateRequest struct {
@@ -36,6 +37,7 @@ type adminUserUpdateRequest struct {
 	// 否则管理员点了"停用"而前端漏填 status 时会**什么都不发生**。
 	Role   *string `json:"role"`
 	Status *string `json:"status"`
+	Phone  *string `json:"phone"`
 }
 
 // GET /api/v1/admin/users?search=&role=&status=&limit=&offset=
@@ -83,6 +85,7 @@ func (d Deps) handleAdminUserCreate(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	created, err := d.UserAdmin.Create(r.Context(), usersvc.CreateInput{
 		Username: req.Username, Email: req.Email, DisplayName: req.DisplayName, Role: req.Role,
+		Phone: req.Phone,
 	})
 	d.auditAction(r, "user.create", "", "user", userIDOf(created), err, 0, time.Since(start))
 	if err != nil {
@@ -110,7 +113,7 @@ func (d Deps) handleAdminUserUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	start := time.Now()
 	updated, err := d.UserAdmin.Update(r.Context(), usersvc.UpdateInput{
-		UserID: id, Role: req.Role, Status: req.Status,
+		UserID: id, Role: req.Role, Status: req.Status, Phone: req.Phone,
 	})
 	action := "user.update"
 	if req.Status != nil {
@@ -138,6 +141,7 @@ func adminUserView(row *repo.AdminUserRow) map[string]any {
 	}
 	v := userView(&row.User)
 	v["email"] = row.Email
+	v["phone"] = row.Phone
 	v["token_version"] = row.TokenVersion
 	v["created_at"] = row.CreatedAt
 	v["updated_at"] = row.UpdatedAt
@@ -165,4 +169,87 @@ func userIDOf(u *model.User) string {
 		return ""
 	}
 	return u.ID
+}
+
+// ---- 用户-部门关联(FE-W-04:用户管理页设置所属部门/主部门)----
+
+type adminUserDepartmentsRequest struct {
+	DepartmentIDs     []string `json:"department_ids"`
+	PrimaryDepartmentID string `json:"primary_department_id"`
+}
+
+// GET /api/v1/admin/users/{id}/departments — 回显用户所属部门 + 主部门。
+func (d Deps) handleGetUserDepartments(w http.ResponseWriter, r *http.Request) {
+	if d.Org == nil {
+		apierr.Write(w, r, apierr.Internal(errors.New("组织架构服务未装配")))
+		return
+	}
+	id := strings.TrimSpace(r.PathValue("id"))
+	if id == "" {
+		apierr.Write(w, r, apierr.BadRequest(apierr.CodeInvalidArgument, "缺少用户 id"))
+		return
+	}
+	depts, err := d.Org.Depts.DepartmentsOfUser(r.Context(), d.Org.DB, id)
+	if err != nil {
+		if errors.Is(err, repo.ErrNotFound) {
+			apierr.Write(w, r, apierr.NotFound("用户不存在"))
+			return
+		}
+		apierr.Write(w, r, apierr.Internal(err))
+		return
+	}
+	primary, err := d.Org.Depts.PrimaryDepartmentOfUser(r.Context(), d.Org.DB, id)
+	if err != nil {
+		apierr.Write(w, r, apierr.Internal(err))
+		return
+	}
+	nodes := make([]map[string]any, 0, len(depts))
+	for _, dept := range depts {
+		nodes = append(nodes, deptView(dept))
+	}
+	apierr.WriteOK(w, r, http.StatusOK, map[string]any{
+		"departments":          nodes,
+		"primary_department_id": primary,
+	})
+}
+
+// PUT /api/v1/admin/users/{id}/departments — 覆盖式设置用户所属部门 + 主部门。
+func (d Deps) handleSetUserDepartments(w http.ResponseWriter, r *http.Request) {
+	if d.Org == nil {
+		apierr.Write(w, r, apierr.Internal(errors.New("组织架构服务未装配")))
+		return
+	}
+	id := strings.TrimSpace(r.PathValue("id"))
+	if id == "" {
+		apierr.Write(w, r, apierr.BadRequest(apierr.CodeInvalidArgument, "缺少用户 id"))
+		return
+	}
+	var req adminUserDepartmentsRequest
+	if err := decodeJSON(w, r, &req); err != nil {
+		apierr.Write(w, r, err)
+		return
+	}
+	if err := d.Org.SetUserDepartments(r.Context(), id, req.DepartmentIDs, req.PrimaryDepartmentID); err != nil {
+		apierr.Write(w, r, err)
+		return
+	}
+	// 回显设置后的结果(与 GET 同构,前端可直接更新本地状态)。
+	depts, err := d.Org.Depts.DepartmentsOfUser(r.Context(), d.Org.DB, id)
+	if err != nil {
+		apierr.Write(w, r, apierr.Internal(err))
+		return
+	}
+	primary, err := d.Org.Depts.PrimaryDepartmentOfUser(r.Context(), d.Org.DB, id)
+	if err != nil {
+		apierr.Write(w, r, apierr.Internal(err))
+		return
+	}
+	nodes := make([]map[string]any, 0, len(depts))
+	for _, dept := range depts {
+		nodes = append(nodes, deptView(dept))
+	}
+	apierr.WriteOK(w, r, http.StatusOK, map[string]any{
+		"departments":          nodes,
+		"primary_department_id": primary,
+	})
 }

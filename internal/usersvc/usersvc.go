@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -21,6 +22,21 @@ import (
 	"github.com/netdisk/netdisk/internal/model"
 	"github.com/netdisk/netdisk/internal/repo"
 )
+
+// phoneRe 中国手机号格式校验(方案第五节: ^1[3-9]\d{9}$)。
+var phoneRe = regexp.MustCompile(`^1[3-9]\d{9}$`)
+
+// validatePhone 校验手机号格式;空串 = 不设手机号,允许。
+func validatePhone(phone string) error {
+	phone = strings.TrimSpace(phone)
+	if phone == "" {
+		return nil
+	}
+	if !phoneRe.MatchString(phone) {
+		return apierr.BadRequest(apierr.CodeInvalidArgument, "手机号格式不正确: %s", phone)
+	}
+	return nil
+}
 
 // DB 是服务需要的读写入口(读走池、写走事务)。
 type DB interface {
@@ -41,6 +57,7 @@ type CreateInput struct {
 	Email       string
 	DisplayName string
 	Role        string
+	Phone       string // 可空;空串 = NULL
 }
 
 // UpdateInput 是后台改用户入参;**指针字段表示"本次不修改"**。
@@ -52,6 +69,7 @@ type UpdateInput struct {
 	UserID string
 	Role   *string
 	Status *string
+	Phone  *string // 可空;nil=不改,非 nil=改(含空串=清空)
 }
 
 // RoleAllowed 判断角色是否合法(与 model 常量同源,新增角色只改一处)。
@@ -108,6 +126,10 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (*model.User, erro
 	if display == "" {
 		display = username
 	}
+	phone := strings.TrimSpace(in.Phone)
+	if perr := validatePhone(phone); perr != nil {
+		return nil, perr
+	}
 
 	var created *model.User
 	err := s.DB.InTx(ctx, func(tx pgx.Tx) error {
@@ -123,9 +145,16 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (*model.User, erro
 				return eerr
 			}
 		}
+		if phone != "" {
+			if _, pherr := s.Users.GetByPhone(ctx, tx, phone); pherr == nil {
+				return accountConflict("phone", phone)
+			} else if !errors.Is(pherr, repo.ErrNotFound) {
+				return pherr
+			}
+		}
 		u, cerr := s.Users.Create(ctx, tx, repo.CreateInput{
 			Username: username, Email: email, DisplayName: display,
-			Role: role, Status: model.StatusActive,
+			Role: role, Status: model.StatusActive, Phone: phone,
 		})
 		if cerr != nil {
 			// 预检与插入之间仍有极小的并发窗口:此时按 23505 兜底,
@@ -152,7 +181,7 @@ func (s *Service) Update(ctx context.Context, in UpdateInput) (*model.User, erro
 	if strings.TrimSpace(in.UserID) == "" {
 		return nil, apierr.BadRequest(apierr.CodeInvalidArgument, "缺少用户 id")
 	}
-	if in.Role == nil && in.Status == nil {
+	if in.Role == nil && in.Status == nil && in.Phone == nil {
 		return nil, apierr.BadRequest(apierr.CodeInvalidArgument, "没有要修改的字段")
 	}
 	if in.Role != nil {
@@ -165,6 +194,13 @@ func (s *Service) Update(ctx context.Context, in UpdateInput) (*model.User, erro
 		status := strings.TrimSpace(*in.Status)
 		if !StatusAllowed(status) {
 			return nil, apierr.BadRequest(apierr.CodeInvalidArgument, "状态不合法: %s", status)
+		}
+	}
+	var newPhone string
+	if in.Phone != nil {
+		newPhone = strings.TrimSpace(*in.Phone)
+		if perr := validatePhone(newPhone); perr != nil {
+			return nil, perr
 		}
 	}
 
@@ -196,6 +232,21 @@ func (s *Service) Update(ctx context.Context, in UpdateInput) (*model.User, erro
 				}
 			}
 		}
+		if in.Phone != nil {
+			// 唯一性预检(与 Create 同纪律:PG 唯一冲突会终止事务,之后查什么都报 25P02)。
+			if newPhone != "" {
+				if existing, pherr := s.Users.GetByPhone(ctx, tx, newPhone); pherr == nil {
+					if existing.ID != in.UserID {
+						return accountConflict("phone", newPhone)
+					}
+				} else if !errors.Is(pherr, repo.ErrNotFound) {
+					return pherr
+				}
+			}
+			if serr := s.Users.SetPhone(ctx, tx, in.UserID, newPhone); serr != nil {
+				return serr
+			}
+		}
 		after, aerr := s.Users.GetByID(ctx, tx, in.UserID)
 		if aerr != nil {
 			return aerr
@@ -215,11 +266,13 @@ func (s *Service) Update(ctx context.Context, in UpdateInput) (*model.User, erro
 	return updated, nil
 }
 
-// accountConflict 构造"账号名/邮箱已被占用"的 409(带 field,前端据此高亮输入框)。
+// accountConflict 构造"账号名/邮箱/手机号已被占用"的 409(带 field,前端据此高亮输入框)。
 func accountConflict(field, value string) error {
 	label := "用户名"
 	if field == "email" {
 		label = "邮箱"
+	} else if field == "phone" {
+		label = "手机号"
 	}
 	return apierr.Conflict(apierr.CodeAccountConflict, "%s已被占用: %s", label, value).
 		WithDetail("field", field)

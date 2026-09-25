@@ -878,6 +878,50 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
+  /api/v1/admin/users/{id}/departments:
+    get:
+      tags: [admin]
+      summary: 获取用户所属部门与主部门
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminUserDepartmentsResult" }
+        "404":
+          description: 用户不存在
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    put:
+      tags: [admin]
+      summary: 覆盖式设置用户所属部门与主部门
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AdminUserDepartmentsRequest" }
+      responses:
+        "200":
+          description: OK(回显设置后的结果)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminUserDepartmentsResult" }
+        "400":
+          description: 非法参数(部门列表为空 / 主部门不在列表中)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: 用户或部门不存在
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /api/v1/admin/spaces:
     get:
       tags: [admin]
@@ -1380,7 +1424,11 @@ components:
       properties:
         id: { type: string }
         name: { type: string }
-        parent_id: { type: string }
+        parent_id: { type: string, nullable: true }
+        source: { type: string, description: "部门来源(manual/wecom/dingtalk/ldap/oidc-scim/keycloak/casdoor/zhuyun)" }
+        ext_id: { type: string, nullable: true, description: "外部身份源中的部门 ID" }
+        is_root: { type: boolean, description: "是否为根节点(机构)" }
+        sort_order: { type: integer }
         children:
           type: array
           items: { $ref: "#/components/schemas/DepartmentNode" }
@@ -1398,6 +1446,7 @@ components:
         role: { type: string, description: super_admin / dept_admin / user }
         status: { type: string, description: active / disabled / pending }
         email: { type: string }
+        phone: { type: string, nullable: true, description: "手机号(00015 新增;可空)" }
         token_version: { type: integer, format: int64 }
         created_at: { type: string }
         updated_at: { type: string }
@@ -1422,12 +1471,37 @@ components:
         email: { type: string }
         display_name: { type: string }
         role: { type: string, description: super_admin / dept_admin / user;缺省 user }
+        phone: { type: string, nullable: true, description: "手机号(中国手机 1[3-9]xxxxxxxxx;可空)" }
 
     AdminUserUpdateRequest:
       type: object
       properties:
         role: { type: string, nullable: true, description: super_admin / dept_admin / user }
         status: { type: string, nullable: true, description: active / disabled / pending }
+        phone: { type: string, nullable: true, description: "手机号;传空串=清空,nil=不改" }
+
+    AdminUserDepartmentsRequest:
+      type: object
+      required: [department_ids]
+      properties:
+        department_ids:
+          type: array
+          items: { type: string }
+          description: 用户所属部门 id 列表(覆盖式:不在列表中的旧关联会被清除)
+        primary_department_id:
+          type: string
+          description: 主部门 id(必须在 department_ids 中;空=不设主部门)
+
+    AdminUserDepartmentsResult:
+      type: object
+      required: [departments, primary_department_id]
+      properties:
+        departments:
+          type: array
+          items: { $ref: "#/components/schemas/DepartmentNode" }
+        primary_department_id:
+          type: string
+          nullable: true
 
     AdminSpaceView:
       type: object

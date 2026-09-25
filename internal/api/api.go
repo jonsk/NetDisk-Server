@@ -198,6 +198,9 @@ func New(d Deps) http.Handler {
 		mux.Handle("GET /api/v1/admin/users", adminChain(d.handleAdminUserList))
 		mux.Handle("POST /api/v1/admin/users", adminChain(d.handleAdminUserCreate))
 		mux.Handle("PATCH /api/v1/admin/users/{id}", adminChain(d.handleAdminUserUpdate))
+		// 用户-部门关联(方案第五节:GET 回显 + PUT 覆盖式设置)
+		mux.Handle("GET /api/v1/admin/users/{id}/departments", adminChain(d.handleGetUserDepartments))
+		mux.Handle("PUT /api/v1/admin/users/{id}/departments", adminChain(d.handleSetUserDepartments))
 	}
 
 	// ---- 上传任务(4.3 预留 + 6.10 单一上传通道)----

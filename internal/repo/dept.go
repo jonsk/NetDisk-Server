@@ -447,6 +447,18 @@ SELECT `+deptColumnsD+`
 	return out, rows.Err()
 }
 
+// PrimaryDepartmentOfUser 返回用户的主部门 id(无主部门时返回空串)。
+func (DeptRepo) PrimaryDepartmentOfUser(ctx context.Context, q Querier, userID string) (string, error) {
+	var deptID string
+	err := q.QueryRow(ctx,
+		`SELECT department_id::text FROM user_departments WHERE user_id = $1 AND is_primary = true LIMIT 1`,
+		userID).Scan(&deptID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	return deptID, err
+}
+
 // UsersInSubtree 取某部门子树内的全部用户(团队空间按部门授权时用)。
 //
 // 这是闭包表的典型收益:一条 SQL、两个索引,不存在递归。

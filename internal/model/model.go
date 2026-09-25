@@ -90,6 +90,7 @@ type User struct {
 	Role         string
 	Status       string
 	TokenVersion int64
+	Phone        string // 可空;空串 = NULL(00015)。部分唯一索引 uq_users_phone
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
 }
@@ -203,13 +204,36 @@ type Upload struct {
 	UpdatedAt     time.Time
 }
 
-// 部门来源(4.2:身份平台同步的部门与手工建的部门共存,靠 source+ext_id 对齐)。
+// 共享 IdP 枚举(9 值超集)。统一作用于 idp_providers.kind /
+// user_sso_bindings.provider_kind / Department.Source 三处。
+//
+// ⚠ 超集 ≠ 每列都允许全集——三列的 CHECK 各自是子集:
+//   - idp_providers.kind: 不含 manual(IdP 不是"手工"的)、不含 oidc-scim
+//   - departments.source: 含 manual、不含 oidc_generic
+//   - user_sso_bindings.provider_kind: 无 CHECK(应用层保证 = idp_providers.kind 镜像)
 const (
-	DeptSourceManual   = "manual"
-	DeptSourceWeCom    = "wecom"
-	DeptSourceDingTalk = "dingtalk"
-	DeptSourceLDAP     = "ldap"
-	DeptSourceOIDCSCIM = "oidc-scim"
+	IdPManual      = "manual"
+	IdPWeCom       = "wecom"
+	IdPDingTalk    = "dingtalk"
+	IdPLDAP        = "ldap"
+	IdPOIDCGeneric = "oidc_generic"
+	IdPOIDCSCIM    = "oidc-scim"
+	IdPKeycloak    = "keycloak"
+	IdPCasdoor     = "casdoor"
+	IdPZhuyun      = "zhuyun"
+)
+
+// 部门来源(4.2:身份平台同步的部门与手工建的部门共存,靠 source+ext_id 对齐)。
+// 值与共享 IdP 枚举一致(指向同一套字符串值),保持既有名称为别名以避免大范围改名。
+const (
+	DeptSourceManual   = IdPManual
+	DeptSourceWeCom    = IdPWeCom
+	DeptSourceDingTalk = IdPDingTalk
+	DeptSourceLDAP     = IdPLDAP
+	DeptSourceOIDCSCIM = IdPOIDCSCIM
+	DeptSourceKeycloak = IdPKeycloak // 00015 新增(IAM 同步来源)
+	DeptSourceCasdoor  = IdPCasdoor  // 00015 新增(IAM 同步来源)
+	DeptSourceZhuyun   = IdPZhuyun   // 00015 新增(IAM 同步来源)
 )
 
 // Department 是组织架构节点(4.2)。

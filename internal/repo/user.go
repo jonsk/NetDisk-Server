@@ -30,13 +30,14 @@ var (
 type UserRepo struct{}
 
 // userColumns 统一列顺序,避免各处 SELECT * 漂移。
+// phone 用 coalesce 把 NULL 转空串(model.User.Phone 是 string 而非 *string)。
 const userColumns = `id, username, coalesce(email,''), display_name, avatar_url,
-	role, status, token_version, created_at, updated_at`
+	role, status, token_version, coalesce(phone,''), created_at, updated_at`
 
 func scanUser(row pgx.Row) (*model.User, error) {
 	var u model.User
 	if err := row.Scan(&u.ID, &u.Username, &u.Email, &u.DisplayName, &u.AvatarURL,
-		&u.Role, &u.Status, &u.TokenVersion, &u.CreatedAt, &u.UpdatedAt); err != nil {
+		&u.Role, &u.Status, &u.TokenVersion, &u.Phone, &u.CreatedAt, &u.UpdatedAt); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrNotFound
 		}
@@ -62,6 +63,28 @@ func (UserRepo) GetByEmail(ctx context.Context, q Querier, email string) (*model
 		`SELECT `+userColumns+` FROM users WHERE lower(email) = lower($1)`, strings.TrimSpace(email)))
 }
 
+// GetByPhone 按手机号查(00015 新增;部分唯一索引 uq_users_phone 保证唯一)。
+func (UserRepo) GetByPhone(ctx context.Context, q Querier, phone string) (*model.User, error) {
+	return scanUser(q.QueryRow(ctx,
+		`SELECT `+userColumns+` FROM users WHERE phone = $1`, strings.TrimSpace(phone)))
+}
+
+// SetPhone 更新用户手机号;空串 = 清空(NULL)。
+func (UserRepo) SetPhone(ctx context.Context, q Querier, userID, phone string) error {
+	var v any
+	if strings.TrimSpace(phone) != "" {
+		v = strings.TrimSpace(phone)
+	}
+	tag, err := q.Exec(ctx, `UPDATE users SET phone = $2, updated_at = now() WHERE id = $1`, userID, v)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // FindByLogin 支持"用户名或邮箱"登录。
 func (r UserRepo) FindByLogin(ctx context.Context, q Querier, login string) (*model.User, error) {
 	login = strings.TrimSpace(login)
@@ -78,6 +101,7 @@ type CreateInput struct {
 	DisplayName string
 	Role        string
 	Status      string
+	Phone       string // 可空;空串 = NULL
 }
 
 // Create 建用户并**自动创建个人空间**(4.1 V2.14:个人配额挂在 personal 空间行)。
@@ -102,11 +126,16 @@ func (UserRepo) Create(ctx context.Context, tx pgx.Tx, in CreateInput) (*model.U
 		email = in.Email
 	}
 
+	var phone any
+	if in.Phone != "" {
+		phone = in.Phone
+	}
+
 	u, err := scanUser(tx.QueryRow(ctx,
-		`INSERT INTO users (username, email, display_name, role, status)
-		 VALUES ($1, $2, $3, $4, $5)
+		`INSERT INTO users (username, email, display_name, role, status, phone)
+		 VALUES ($1, $2, $3, $4, $5, $6)
 		 RETURNING `+userColumns,
-		in.Username, email, in.DisplayName, in.Role, in.Status))
+		in.Username, email, in.DisplayName, in.Role, in.Status, phone))
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
@@ -290,7 +319,7 @@ func (UserRepo) ListWithLogin(ctx context.Context, q Querier, f UserFilter) ([]A
 	for rows.Next() {
 		var r AdminUserRow
 		if serr := rows.Scan(&r.ID, &r.Username, &r.Email, &r.DisplayName, &r.AvatarURL,
-			&r.Role, &r.Status, &r.TokenVersion, &r.CreatedAt, &r.UpdatedAt, &r.LastLoginAt); serr != nil {
+			&r.Role, &r.Status, &r.TokenVersion, &r.Phone, &r.CreatedAt, &r.UpdatedAt, &r.LastLoginAt); serr != nil {
 			return nil, 0, serr
 		}
 		out = append(out, r)
