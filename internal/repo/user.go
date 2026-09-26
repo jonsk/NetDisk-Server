@@ -229,7 +229,7 @@ func (UserRepo) SetEmail(ctx context.Context, q Querier, userID, email string) e
 //
 // 设上限而不是"要多少给多少":后台列表会被前端一次拉全量(几千人),
 // 服务端不封顶就等于把"一次请求序列化几兆 JSON"的能力交给了 URL 参数。
-const MaxUserListLimit = 200
+const MaxUserListLimit = 500
 
 // userScopeUnassigned 是 UserFilter.DeptScope 的"仅未分配"取值。
 const userScopeUnassigned = "unassigned"

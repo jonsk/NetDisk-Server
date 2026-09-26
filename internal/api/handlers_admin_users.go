@@ -1,6 +1,7 @@
 package api
 
 import (
+	"crypto/rand"
 	"errors"
 	"net/http"
 	"strconv"
@@ -30,9 +31,11 @@ type adminUserCreateRequest struct {
 	DisplayName string `json:"display_name"`
 	Role        string `json:"role"`
 	Phone       string `json:"phone"`
+	// Password 为可选初始密码;不填则由后端生成随机临时口令并返回(前端提示转交)。
+	Password string `json:"password"`
 	// 建号即归属(可选):department_id 为初始所属机构,primary_department_id 可选主部门。
-	DepartmentID         string `json:"department_id"`
-	PrimaryDepartmentID  string `json:"primary_department_id"`
+	DepartmentID        string `json:"department_id"`
+	PrimaryDepartmentID string `json:"primary_department_id"`
 }
 
 type adminUserUpdateRequest struct {
@@ -114,7 +117,46 @@ func (d Deps) handleAdminUserCreate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	apierr.WriteOK(w, r, http.StatusCreated, adminUserView(&repo.AdminUserRow{User: *created}))
+	// 初始密码:填了则用指定值;不填则生成随机临时口令(在响应里回传,前端弹窗提示转交用户)。
+	pw := strings.TrimSpace(req.Password)
+	tempPassword := ""
+	if pw == "" {
+		pw = genTempPassword()
+		tempPassword = pw
+	}
+	if d.Auth == nil {
+		apierr.Write(w, r, apierr.Internal(errors.New("认证服务未装配")))
+		return
+	}
+	if perr := d.Auth.SetPassword(r.Context(), created.ID, pw); perr != nil {
+		apierr.Write(w, r, perr)
+		return
+	}
+	view := adminUserView(&repo.AdminUserRow{User: *created})
+	if tempPassword != "" {
+		view["temp_password"] = tempPassword
+	}
+	apierr.WriteOK(w, r, http.StatusCreated, view)
+}
+
+// genTempPassword 生成符合默认密码策略(>=8 字节、至少两类字符)的随机临时口令。
+func genTempPassword() string {
+	const chars = "abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+	const n = 14
+	raw := make([]byte, n)
+	if _, err := rand.Read(raw); err != nil {
+		// 极不可能:rand 失败时退化为确定性填充(仍满足复杂度)。
+		for i := range raw {
+			raw[i] = chars[i%len(chars)]
+		}
+	}
+	out := make([]byte, 0, n+2)
+	for _, c := range raw {
+		out = append(out, chars[int(c)%len(chars)])
+	}
+	// 末尾补字母+数字,确保至少两类字符(默认策略 MinClasses=2)。
+	out = append(out, 'a', '1')
+	return string(out)
 }
 
 // setUserDepartmentOnCreate 在建号后把用户挂到机构(创建 + 设为单一部门)。Org 未装配时静默跳过部门归属。
@@ -202,6 +244,40 @@ func userIDOf(u *model.User) string {
 	return u.ID
 }
 
+// POST /api/v1/admin/users/{id}/password — 管理员重置用户密码(强制下线该用户全部会话)。
+//
+// 复用 authsvc.SetPassword(同一事务里改哈希 + 吊销 refresh + 自增 token_version)。
+func (d Deps) handleAdminSetPassword(w http.ResponseWriter, r *http.Request) {
+	if d.Auth == nil {
+		apierr.Write(w, r, apierr.Internal(errors.New("认证服务未装配")))
+		return
+	}
+	id := strings.TrimSpace(r.PathValue("id"))
+	if id == "" {
+		apierr.Write(w, r, apierr.BadRequest(apierr.CodeInvalidArgument, "缺少用户 id"))
+		return
+	}
+	var req struct {
+		Password string `json:"password"`
+	}
+	if err := decodeJSON(w, r, &req); err != nil {
+		apierr.Write(w, r, err)
+		return
+	}
+	if strings.TrimSpace(req.Password) == "" {
+		apierr.Write(w, r, apierr.BadRequest(apierr.CodeInvalidArgument, "密码不能为空"))
+		return
+	}
+	start := time.Now()
+	err := d.Auth.SetPassword(r.Context(), id, strings.TrimSpace(req.Password))
+	d.auditAction(r, "user.set_password", "", "user", id, err, 0, time.Since(start))
+	if err != nil {
+		apierr.Write(w, r, err)
+		return
+	}
+	apierr.WriteOK(w, r, http.StatusOK, map[string]any{"ok": true})
+}
+
 // ---- 用户-部门关联(FE-W-04:用户管理页设置所属部门/主部门)----
 
 type adminUserDepartmentsRequest struct {
@@ -260,7 +336,14 @@ func (d Deps) handleSetUserDepartments(w http.ResponseWriter, r *http.Request) {
 		apierr.Write(w, r, err)
 		return
 	}
-	if err := d.Org.SetUserDepartments(r.Context(), id, req.DepartmentIDs, req.PrimaryDepartmentID); err != nil {
+	// 单部门归属:一个用户只能属于 1 个机构(机构与人员页强约束)。
+	// 多选或空都视为非法,杜绝 user_departments 出现多行导致用户在多处显示。
+	if len(req.DepartmentIDs) != 1 {
+		apierr.Write(w, r, apierr.BadRequest(apierr.CodeInvalidArgument, "一个用户只能归属 1 个部门"))
+		return
+	}
+	// 单归属下主部门即该部门本身(is_primary 恒为 true)。
+	if err := d.Org.SetUserDepartments(r.Context(), id, req.DepartmentIDs, req.DepartmentIDs[0]); err != nil {
 		apierr.Write(w, r, err)
 		return
 	}

@@ -207,6 +207,8 @@ func New(d Deps) http.Handler {
 		mux.Handle("GET /api/v1/admin/users", adminChain(d.handleAdminUserList))
 		mux.Handle("POST /api/v1/admin/users", adminChain(d.handleAdminUserCreate))
 		mux.Handle("PATCH /api/v1/admin/users/{id}", adminChain(d.handleAdminUserUpdate))
+		// 管理员重置用户密码(强制下线该用户全部会话)。
+		mux.Handle("POST /api/v1/admin/users/{id}/password", adminChain(d.handleAdminSetPassword))
 		// 用户-部门关联(方案第五节:GET 回显 + PUT 覆盖式设置)
 		mux.Handle("GET /api/v1/admin/users/{id}/departments", adminChain(d.handleGetUserDepartments))
 		mux.Handle("PUT /api/v1/admin/users/{id}/departments", adminChain(d.handleSetUserDepartments))
