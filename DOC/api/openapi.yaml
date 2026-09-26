@@ -599,18 +599,30 @@ paths:
   /api/v1/admin/departments:
     get:
       tags: [admin]
-      summary: 部门树(闭包表)
+      summary: 全部部门(扁平列表)
+      description: |
+        deprecated: true
+        管理后台前端请使用 /api/v1/admin/departments/children 懒加载。
+        本端点仅为兼容保留(8000+ 节点一次拉全量会导致前端 n-tree 卡死);
+        将来 IAM 同步引擎接入后使用,随后可删。
       responses:
         "200":
           description: OK
           content:
             application/json:
               schema:
-                type: array
-                items: { $ref: "#/components/schemas/DepartmentNode" }
+                type: object
+                properties:
+                  departments:
+                    type: array
+                    items: { $ref: "#/components/schemas/DepartmentNode" }
+                  total: { type: integer }
     post:
       tags: [admin]
-      summary: 新建部门
+      summary: 新建部门/机构(根节点)
+      description: |
+        parent_id 为空时创建机构根节点。**禁止创建第二个根**:已存在根时返回 409。
+        顶层机构请在某个子节点下新建(parent_id 指向该子节点)。
       requestBody:
         required: true
         content:
@@ -621,17 +633,94 @@ paths:
               properties:
                 name: { type: string }
                 parent_id: { type: string }
+                sort_order: { type: integer }
       responses:
         "201": { description: OK }
+        "409":
+          description: 已存在根节点 / 同源同 ext_id 已存在
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/admin/departments/children:
+    get:
+      tags: [admin]
+      summary: 某节点的直接子部门(一层,懒加载)
+      description: |
+        parent_id 为空时返回机构根节点。仅返回直接子部门,不递归。
+        响应含 has_children(前端据此显示/隐藏展开箭头)。
+        total = 当前层本页返回数(单层 >500 时反映本页数而非真实总数)。
+      parameters:
+        - { name: parent_id, in: query, required: false, schema: { type: string }, description: 空=返回根节点 }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  departments:
+                    type: array
+                    items: { $ref: "#/components/schemas/DepartmentNode" }
+                  total: { type: integer }
 
   /api/v1/admin/departments/{id}:
     delete:
       tags: [admin]
-      summary: 删除部门
+      summary: 删除机构(拒绝式:前置校验)
+      description: |
+        有子部门或有直属人员时返回 409(管理员先清空再删),非级联。
+        根节点始终拒绝("机构根节点不可删除,只能改名")。
+        删除前可先调 GET /api/v1/admin/departments/{id}/delete-check 预检。
       parameters:
         - { name: id, in: path, required: true, schema: { type: string } }
       responses:
         "204": { description: OK }
+        "409":
+          description: 有子部门 / 有直属人员 / 是根节点
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    put:
+      tags: [admin]
+      summary: 改名机构/部门(PUT 整字段替换)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DepartmentRenameRequest" }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DepartmentNode" }
+        "404":
+          description: 机构不存在
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/admin/departments/{id}/delete-check:
+    get:
+      tags: [admin]
+      summary: 删除前预检(返回能否删除 + 阻断原因计数)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  can_delete: { type: boolean }
+                  child_count: { type: integer }
+                  user_count: { type: integer }
 
   /api/v1/spaces:
     get:
@@ -812,11 +901,14 @@ paths:
   /api/v1/admin/users:
     get:
       tags: [admin]
-      summary: 管理员列出用户
+      summary: 管理员列出用户(支持按机构筛选)
       parameters:
         - { name: search, in: query, required: false, schema: { type: string } }
         - { name: role, in: query, required: false, schema: { type: string } }
         - { name: status, in: query, required: false, schema: { type: string } }
+        - { name: department_id, in: query, required: false, schema: { type: string }, description: 空=不过滤(全局) }
+        - { name: include_subtree, in: query, required: false, schema: { type: boolean }, description: 缺省/非法值一律 true;仅显式 false/0 为 false。true=含该机构子树下用户,false=仅本部门直属 }
+        - { name: scope, in: query, required: false, schema: { type: string }, description: '"unassigned"=仅无任何部门归属的用户(如超管);其余缺省按机构/全局。' }
         - { name: limit, in: query, required: false, schema: { type: integer } }
         - { name: offset, in: query, required: false, schema: { type: integer } }
       responses:
@@ -1424,14 +1516,22 @@ components:
       properties:
         id: { type: string }
         name: { type: string }
-        parent_id: { type: string, nullable: true }
-        source: { type: string, description: "部门来源(manual/wecom/dingtalk/ldap/oidc-scim/keycloak/casdoor/zhuyun)" }
-        ext_id: { type: string, nullable: true, description: "外部身份源中的部门 ID" }
-        is_root: { type: boolean, description: "是否为根节点(机构)" }
+        parent_id: { type: string, nullable: true, description: 根节点为空串 "" }
         sort_order: { type: integer }
+        source: { type: string, description: 部门来源(manual/wecom/dingtalk/ldap/oidc-scim/keycloak/casdoor/zhuyun) }
+        ext_id: { type: string, nullable: true, description: 外部身份源中的部门 id }
+        is_root: { type: boolean, description: 是否为根节点(机构) }
+        has_children: { type: boolean, description: 是否还有子部门(懒加载据此显示展开箭头) }
         children:
           type: array
+          description: 仅历史兼容/可选,新设计下任何端点都不填充;前端勿据此递归渲染
           items: { $ref: "#/components/schemas/DepartmentNode" }
+
+    DepartmentRenameRequest:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, description: 新名称(部门唯一可改字段) }
 
     # ---- 管理员治理:用户与空间(4.3 / FE-W-04 / FE-W-06)----
 
@@ -1471,7 +1571,9 @@ components:
         email: { type: string }
         display_name: { type: string }
         role: { type: string, description: super_admin / dept_admin / user;缺省 user }
-        phone: { type: string, nullable: true, description: "手机号(中国手机 1[3-9]xxxxxxxxx;可空)" }
+        phone: { type: string, nullable: true, description: "手机号;可空" }
+        department_id: { type: string, description: "建号即归属(可选):初始所属机构 id" }
+        primary_department_id: { type: string, description: "建号即归属(可选):主部门 id,须为 department_id 或同部门" }
 
     AdminUserUpdateRequest:
       type: object
@@ -1479,6 +1581,8 @@ components:
         role: { type: string, nullable: true, description: super_admin / dept_admin / user }
         status: { type: string, nullable: true, description: active / disabled / pending }
         phone: { type: string, nullable: true, description: "手机号;传空串=清空,nil=不改" }
+        display_name: { type: string, nullable: true, description: "显示名;nil=不改" }
+        email: { type: string, nullable: true, description: "邮箱;传空串=清空,nil=不改" }
 
     AdminUserDepartmentsRequest:
       type: object
