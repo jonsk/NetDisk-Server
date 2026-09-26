@@ -187,6 +187,15 @@ func New(d Deps) http.Handler {
 		mux.Handle("POST /api/v1/admin/departments", adminChain(d.handleDeptCreate))
 		mux.Handle("DELETE /api/v1/admin/departments/{id}", adminChain(d.handleDeptDelete))
 		mux.Handle("GET /api/v1/admin/departments/{id}/subtree", adminChain(d.handleDeptSubtree))
+		// 懒加载:某节点的直接子部门(一层)。`children` 字面量天然优先于 `{id}` 参数路由,
+		// 与 GET /departments/{id}/... 不冲突(Go 1.22 ServeMux)。
+		mux.Handle("GET /api/v1/admin/departments/children", adminChain(d.handleDeptChildren))
+		// 名称搜索(树内定位;`search` 字面量优先于 {id} 参数路由)
+		mux.Handle("GET /api/v1/admin/departments/search", adminChain(d.handleDeptSearch))
+		// 改名(PUT 整字段替换)
+		mux.Handle("PUT /api/v1/admin/departments/{id}", adminChain(d.handleDeptRename))
+		// 删除前预检
+		mux.Handle("GET /api/v1/admin/departments/{id}/delete-check", adminChain(d.handleDeptDeleteCheck))
 		// 重建闭包表:幂等,组织同步后调用(post 语义:它改变了派生索引)
 		mux.Handle("POST /api/v1/admin/departments/rebuild-closure", adminChain(d.handleDeptRebuild))
 	}

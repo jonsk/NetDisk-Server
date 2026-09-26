@@ -100,7 +100,17 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (*model.Department
 	}
 	var out *model.Department
 	err := s.DB.InTx(ctx, func(tx pgx.Tx) error {
-		if in.ParentID != "" {
+		if in.ParentID == "" {
+			// 建根:拦截"第二个根"。合并页"单根"假设(左树以根为顶级)依赖此守卫。
+			ok, err := s.Depts.RootExists(ctx, tx)
+			if err != nil {
+				return apierr.Internal(err)
+			}
+			if ok {
+				return apierr.Conflict(apierr.CodeInvalidArgument,
+					"已存在机构根节点,不能创建第二个根;顶层机构请在某个子节点下新建")
+			}
+		} else {
 			// 父必须存在,否则会把"打错 id"变成一个孤立子树
 			if _, err := s.Depts.GetByID(ctx, tx, in.ParentID); err != nil {
 				if errors.Is(err, repo.ErrNotFound) {
@@ -177,34 +187,154 @@ func (s *Service) Move(ctx context.Context, deptID, newParentID string) (*model.
 	return out, nil
 }
 
-// Delete 删除部门(仅叶子)。
+// Delete 拒绝式删除机构(前置校验,非级联)。
 //
-// 有子部门时返回 409 而非级联删除:级联删部门会连带改变"哪些人能看到团队空间",
-// 属业务决策,不该由一次误点决定。
+// 语义:删除机构前,必须先删完它的全部子部门和直属人员。
+//   - 根节点 → 始终拒绝("机构根节点不可删除,只能改名")
+//   - 还有子部门 → 409
+//   - 还有直属人员 → 409
+//   - 两者都清空 → 允许删除
+//
+// ⚠ 守卫必须位于 repo.Delete 之前(先查后删):repo.Delete 的 DELETE 会触发
+// user_departments.department_id 的 FK CASCADE(连带清成员行)。因为本方法在
+// repo.Delete 前用 CountChildren/CountUsersInDept 拦住了"有子部门/有成员",
+// CASCADE 只会在"确实为空"时兜底,行为正确。切勿因加了 CountUsersInDept 就去掉
+// 根保护或子部门检查 —— CASCADE 只是空节点删除时的兜底清理,不是结构/成员保护。
 func (s *Service) Delete(ctx context.Context, deptID string) error {
 	if s.DB == nil {
 		return apierr.Internal(errors.New("orgsvc: DB 未装配"))
 	}
 	return s.DB.InTx(ctx, func(tx pgx.Tx) error {
-		n, err := s.Depts.CountChildren(ctx, tx, deptID)
+		target, err := s.Depts.GetByID(ctx, tx, deptID)
+		if err != nil {
+			if errors.Is(err, repo.ErrNotFound) {
+				return apierr.NotFound("机构不存在")
+			}
+			return apierr.Internal(err)
+		}
+		// 根保护
+		if target.ParentID == "" {
+			return apierr.Conflict(apierr.CodeInvalidArgument, "机构根节点不可删除，只能改名")
+		}
+
+		// 检查子部门
+		childCount, err := s.Depts.CountChildren(ctx, tx, deptID)
 		if err != nil {
 			return apierr.Internal(err)
 		}
-		if n > 0 {
+		if childCount > 0 {
 			return apierr.Conflict(apierr.CodeInvalidArgument,
-				"该部门下还有 %d 个子部门,请先移动或删除子部门", n)
+				"该机构下还有 %d 个下属机构，请先删除", childCount)
 		}
+
+		// 检查直属人员(子部门已清空,只需查本部门)
+		userCount, err := s.Depts.CountUsersInDept(ctx, tx, deptID)
+		if err != nil {
+			return apierr.Internal(err)
+		}
+		if userCount > 0 {
+			return apierr.Conflict(apierr.CodeInvalidArgument,
+				"该机构下还有 %d 名人员，请先移除", userCount)
+		}
+
 		if err := s.Depts.Delete(ctx, tx, deptID); err != nil {
 			if errors.Is(err, repo.ErrNotFound) {
-				return apierr.NotFound("部门不存在")
+				return apierr.NotFound("机构不存在")
 			}
 			if errors.Is(err, repo.ErrConflict) {
-				return apierr.Conflict(apierr.CodeInvalidArgument, "该部门仍有成员或关联数据,无法删除")
+				return apierr.Conflict(apierr.CodeInvalidArgument, "该机构仍有成员或关联数据,无法删除")
 			}
 			return apierr.Internal(err)
 		}
 		return nil
 	})
+}
+
+// DeleteCheckResult 是删除前预检结果(前端据此决定删除按钮是否可点)。
+type DeleteCheckResult struct {
+	CanDelete  bool  `json:"can_delete"`
+	ChildCount int64 `json:"child_count"`
+	UserCount  int64 `json:"user_count"` // 本部门直属人员(子部门人员由各自的 delete-check 负责)
+}
+
+// DeleteCheck 返回某机构的删除前置条件状态。
+//
+// 与 Delete 的 409 根保护对齐:根节点(parent_id IS NULL)直接返回 can_delete=false,
+// 即使前端对根节点不显示删除按钮,后端也要拦。
+func (s *Service) DeleteCheck(ctx context.Context, deptID string) (*DeleteCheckResult, error) {
+	if s.DB == nil {
+		return nil, apierr.Internal(errors.New("orgsvc: DB 未装配"))
+	}
+	var res *DeleteCheckResult
+	err := s.DB.InTx(ctx, func(tx pgx.Tx) error {
+		target, err := s.Depts.GetByID(ctx, tx, deptID)
+		if err != nil {
+			if errors.Is(err, repo.ErrNotFound) {
+				return apierr.NotFound("机构不存在")
+			}
+			return apierr.Internal(err)
+		}
+		r := &DeleteCheckResult{}
+		if target.ParentID == "" {
+			// 根节点照常算出计数(前端可复用文案),但 can_delete 恒 false。
+			r.CanDelete = false
+		} else {
+			r.CanDelete = true
+		}
+		childCount, err := s.Depts.CountChildren(ctx, tx, deptID)
+		if err != nil {
+			return apierr.Internal(err)
+		}
+		userCount, err := s.Depts.CountUsersInDept(ctx, tx, deptID)
+		if err != nil {
+			return apierr.Internal(err)
+		}
+		r.ChildCount = childCount
+		r.UserCount = userCount
+		if r.CanDelete && (childCount > 0 || userCount > 0) {
+			r.CanDelete = false
+		}
+		res = r
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return res, nil
+}
+
+// Children 返回某节点的直接子部门(一层,懒加载)。parentID 为空返回根节点。
+func (s *Service) Children(ctx context.Context, parentID string) ([]repo.DeptWithChildren, error) {
+	if s.DB == nil {
+		return nil, apierr.Internal(errors.New("orgsvc: DB 未装配"))
+	}
+	return s.Depts.Children(ctx, s.DB, parentID)
+}
+
+// Rename 改机构/部门名。
+func (s *Service) Rename(ctx context.Context, deptID, name string) (*model.Department, error) {
+	if err := validateDeptName(name); err != nil {
+		return nil, err
+	}
+	if s.DB == nil {
+		return nil, apierr.Internal(errors.New("orgsvc: DB 未装配"))
+	}
+	var out *model.Department
+	err := s.DB.InTx(ctx, func(tx pgx.Tx) error {
+		d, err := s.Depts.Rename(ctx, tx, deptID, name)
+		if err != nil {
+			if errors.Is(err, repo.ErrNotFound) {
+				return apierr.NotFound("机构不存在")
+			}
+			return apierr.Internal(err)
+		}
+		out = d
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // Subtree 返回子树(含自身),供后台树展示与"按部门授权"预览影响面。

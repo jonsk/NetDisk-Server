@@ -3,6 +3,7 @@ package api
 import (
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -34,7 +35,8 @@ func (d Deps) handleDeptTree(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]map[string]any, 0, len(depts))
 	for _, dpt := range depts {
-		out = append(out, deptView(dpt))
+		// 已 deprecated 的全量端点:前端不再用,不逐节点跑 EXISTS(N+1),传 false。
+		out = append(out, deptView(dpt, false))
 	}
 	apierr.WriteOK(w, r, http.StatusOK, map[string]any{"departments": out, "total": len(out)})
 }
@@ -60,7 +62,7 @@ func (d Deps) handleDeptCreate(w http.ResponseWriter, r *http.Request) {
 		apierr.Write(w, r, err)
 		return
 	}
-	apierr.WriteOK(w, r, http.StatusCreated, deptView(created))
+	apierr.WriteOK(w, r, http.StatusCreated, deptView(created, false))
 }
 
 // handleDeptSubtree 返回子树(含自身),用于"按部门授权"前预览影响面。
@@ -77,12 +79,12 @@ func (d Deps) handleDeptSubtree(w http.ResponseWriter, r *http.Request) {
 	}
 	nodes := make([]map[string]any, 0, len(st.Nodes))
 	for _, n := range st.Nodes {
-		v := deptView(n)
+		v := deptView(n, false)
 		v["relative_depth"] = st.Depth[n.ID]
 		nodes = append(nodes, v)
 	}
 	apierr.WriteOK(w, r, http.StatusOK, map[string]any{
-		"root": deptView(st.Root), "nodes": nodes, "total": len(nodes),
+		"root": deptView(st.Root, false), "nodes": nodes, "total": len(nodes),
 	})
 }
 
@@ -123,19 +125,119 @@ func (d Deps) handleDeptDelete(w http.ResponseWriter, r *http.Request) {
 }
 
 // deptView 是部门对外字段(source/ext_id 是同步对账用的,后台需要看到)。
-func deptView(d *model.Department) map[string]any {
+//
+// hasChildren 告诉前端"要不要去拉子节点"(懒加载)。懒加载模式下每个节点都是扁平的,
+// 不再递归 children。
+func deptView(d *model.Department, hasChildren bool) map[string]any {
 	if d == nil {
 		return nil
 	}
 	return map[string]any{
-		"id":         d.ID,
-		"parent_id":  d.ParentID,
-		"name":       d.Name,
-		"sort_order": d.SortOrder,
-		"source":     d.Source,
-		"ext_id":     d.ExtID,
-		"is_root":    d.IsRoot(),
+		"id":           d.ID,
+		"parent_id":    d.ParentID,
+		"name":         d.Name,
+		"sort_order":   d.SortOrder,
+		"source":       d.Source,
+		"ext_id":       d.ExtID,
+		"is_root":      d.IsRoot(),
+		"has_children": hasChildren,
 	}
+}
+
+// handleDeptChildren 返回某节点的直接子部门(一层,懒加载)。parent_id 为空返回根节点。
+//
+// total = 当前层节点数(本页返回数)。单层 >500 子节点时 total 反映本页返回数而非真实总数
+// (契约已注明;单层 >500 在 8000 节点树里极少,懒加载无需精确总量)。
+func (d Deps) handleDeptChildren(w http.ResponseWriter, r *http.Request) {
+	if d.Org == nil {
+		apierr.Write(w, r, apierr.Internal(errors.New("组织服务未装配")))
+		return
+	}
+	parentID := strings.TrimSpace(r.URL.Query().Get("parent_id"))
+	depts, err := d.Org.Children(r.Context(), parentID)
+	if err != nil {
+		apierr.Write(w, r, err)
+		return
+	}
+	out := make([]map[string]any, 0, len(depts))
+	for i := range depts {
+		out = append(out, deptView(&depts[i].Department, depts[i].HasChildren))
+	}
+	apierr.WriteOK(w, r, http.StatusOK, map[string]any{"departments": out, "total": len(out)})
+}
+
+// handleDeptSearch 按名称子串搜索机构(后台树内搜索,命中返回节点 + total)。
+// 前端据此在树内展开到命中路径;不做全量 8000 节点拉回。
+func (d Deps) handleDeptSearch(w http.ResponseWriter, r *http.Request) {
+	if d.Org == nil {
+		apierr.Write(w, r, apierr.Internal(errors.New("组织服务未装配")))
+		return
+	}
+	q := strings.TrimSpace(r.URL.Query().Get("q"))
+	if q == "" {
+		apierr.Write(w, r, apierr.BadRequest(apierr.CodeInvalidArgument, "缺少搜索词 q"))
+		return
+	}
+	limit, _ := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get("limit")))
+	depts, err := d.Org.Depts.SearchByName(r.Context(), d.Org.DB, q, limit)
+	if err != nil {
+		apierr.Write(w, r, err)
+		return
+	}
+	out := make([]map[string]any, 0, len(depts))
+	for _, dept := range depts {
+		out = append(out, deptView(dept, false))
+	}
+	apierr.WriteOK(w, r, http.StatusOK, map[string]any{"departments": out, "total": len(out)})
+}
+
+// handleDeptRename 改名机构/部门(PUT /departments/{id},整字段替换)。
+type deptRenameRequest struct {
+	Name string `json:"name"`
+}
+
+func (d Deps) handleDeptRename(w http.ResponseWriter, r *http.Request) {
+	if d.Org == nil {
+		apierr.Write(w, r, apierr.Internal(errors.New("组织服务未装配")))
+		return
+	}
+	id := strings.TrimSpace(r.PathValue("id"))
+	if id == "" {
+		apierr.Write(w, r, apierr.BadRequest(apierr.CodeInvalidArgument, "缺少机构 id"))
+		return
+	}
+	var req deptRenameRequest
+	if err := decodeJSON(w, r, &req); err != nil {
+		apierr.Write(w, r, err)
+		return
+	}
+	start := time.Now()
+	renamed, err := d.Org.Rename(r.Context(), id, strings.TrimSpace(req.Name))
+	d.auditAction(r, "dept.rename", "", "department", id, err, 0, time.Since(start))
+	if err != nil {
+		apierr.Write(w, r, err)
+		return
+	}
+	apierr.WriteOK(w, r, http.StatusOK, deptView(renamed, false))
+}
+
+// handleDeptDeleteCheck 删除前预检:返回该机构能否删除 + 阻断原因计数。
+func (d Deps) handleDeptDeleteCheck(w http.ResponseWriter, r *http.Request) {
+	if d.Org == nil {
+		apierr.Write(w, r, apierr.Internal(errors.New("组织服务未装配")))
+		return
+	}
+	id := strings.TrimSpace(r.PathValue("id"))
+	if id == "" {
+		apierr.Write(w, r, apierr.BadRequest(apierr.CodeInvalidArgument, "缺少机构 id"))
+		return
+	}
+	res, err := d.Org.DeleteCheck(r.Context(), id)
+	if err != nil {
+		apierr.Write(w, r, err)
+		return
+	}
+	apierr.WriteOK(w, r, http.StatusOK, res)
 }
 
 func deptIDOf(d *model.Department) string {

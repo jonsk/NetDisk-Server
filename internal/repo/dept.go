@@ -394,6 +394,103 @@ func (DeptRepo) CountChildren(ctx context.Context, q Querier, id string) (int64,
 	return n, err
 }
 
+// RootExists 判断当前是否已存在机构根节点(parent_id IS NULL)。
+//
+// orgsvc.Create 在 ParentID==""(建根)时用它拦截"第二个根",保证合并页"单根"假设成立。
+func (DeptRepo) RootExists(ctx context.Context, q Querier) (bool, error) {
+	var n int64
+	if err := q.QueryRow(ctx,
+		`SELECT count(*) FROM departments WHERE parent_id IS NULL`).Scan(&n); err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
+// DeptWithChildren 是"部门 + 是否还有子节点"的载体,供懒加载树用。
+//
+// 定义在 repo 包(非 orgsvc):orgsvc 与 handler 跨包引用时必须写全限定
+// []repo.DeptWithChildren,不能裸写 DeptWithChildren。
+type DeptWithChildren struct {
+	model.Department
+	HasChildren bool
+}
+
+// Children 返回某节点的**直接子部门**(一层,不递归)。
+//
+// parentID 为空时返回根节点(parent_id IS NULL)。单层通常 <100 节点;
+// has_children 用 EXISTS 子查询在**同一条 SQL**里带出(走 departments_parent_idx),
+// 而不是逐节点再查一次(避免 N+1)。
+//
+// 列序对齐 deptColumnsD(8 列)+ 末尾 has_children = 9 个扫描目标,与 scanDept 一致。
+func (DeptRepo) Children(ctx context.Context, q Querier, parentID string) ([]DeptWithChildren, error) {
+	const childrenCols = deptColumnsD + `,
+       EXISTS(SELECT 1 FROM departments c WHERE c.parent_id = d.id) AS has_children`
+
+	var rows pgx.Rows
+	var err error
+	if parentID == "" {
+		rows, err = q.Query(ctx, `
+SELECT `+childrenCols+`
+  FROM departments d
+ WHERE d.parent_id IS NULL
+ ORDER BY d.sort_order, d.name
+ LIMIT 500`)
+	} else {
+		rows, err = q.Query(ctx, `
+SELECT `+childrenCols+`
+  FROM departments d
+ WHERE d.parent_id = $1
+ ORDER BY d.sort_order, d.name
+ LIMIT 500`, parentID)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []DeptWithChildren
+	for rows.Next() {
+		var d model.Department
+		var hasChildren bool
+		if err := rows.Scan(&d.ID, &d.ParentID, &d.Name, &d.SortOrder, &d.Source,
+			&d.ExtID, &d.CreatedAt, &d.UpdatedAt, &hasChildren); err != nil {
+			return nil, err
+		}
+		out = append(out, DeptWithChildren{Department: d, HasChildren: hasChildren})
+	}
+	return out, rows.Err()
+}
+
+// SearchByName 按名称子串搜索机构(后台树内搜索,前缀优化:命中按名称排序)。
+//
+// 不做全量(8000 节点)一次拉回:搜索返回命中的节点 + 其祖先链上的 id,
+// 前端据此展开树到命中路径。limit 封顶避免大结果集。
+func (DeptRepo) SearchByName(ctx context.Context, q Querier, keyword string, limit int) ([]*model.Department, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	like := "%" + escapeLike(keyword) + "%"
+	rows, err := q.Query(ctx, `
+SELECT `+deptColumnsD+`
+  FROM departments d
+ WHERE d.name ILIKE $1 ESCAPE '\'
+ ORDER BY d.sort_order, d.name
+ LIMIT $2`, like, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*model.Department
+	for rows.Next() {
+		d, err := scanDept(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
 // ---- 用户与部门关联 ----
 
 // SetUserDepartments 覆盖式设置用户所属部门(is_primary 只允许一个)。
@@ -482,4 +579,15 @@ SELECT DISTINCT ud.user_id::text
 		out = append(out, id)
 	}
 	return out, rows.Err()
+}
+
+// CountUsersInDept 统计**本部门直属**人员数(不含子部门)。
+//
+// 删除守卫用:拒绝式删除时,子部门已确认清空,只剩"本部门还有人"这一道检查。
+// 走新增的 user_departments_dept_idx 单列索引(00016)。
+func (DeptRepo) CountUsersInDept(ctx context.Context, q Querier, deptID string) (int64, error) {
+	var n int64
+	err := q.QueryRow(ctx,
+		`SELECT count(*) FROM user_departments WHERE department_id = $1`, deptID).Scan(&n)
+	return n, err
 }
