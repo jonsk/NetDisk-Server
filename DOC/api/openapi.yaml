@@ -970,6 +970,41 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
+  /api/v1/admin/users/{id}/password:
+    post:
+      tags: [admin]
+      summary: 管理员重置用户密码(强制下线该用户全部会话)
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [password]
+              properties:
+                password: { type: string, description: 新密码(至少 8 字节、至少两类字符) }
+      responses:
+        "200":
+          description: 重置成功(该用户所有 refresh token 已被吊销)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+        "400":
+          description: 密码为空或不满足强度策略
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: 用户不存在
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /api/v1/admin/users/{id}/departments:
     get:
       tags: [admin]
@@ -1574,6 +1609,7 @@ components:
         phone: { type: string, nullable: true, description: "手机号;可空" }
         department_id: { type: string, description: "建号即归属(可选):初始所属机构 id" }
         primary_department_id: { type: string, description: "建号即归属(可选):主部门 id,须为 department_id 或同部门" }
+        password: { type: string, description: "初始密码(可选);不填则后端生成随机临时口令,建号响应回传 temp_password" }
 
     AdminUserUpdateRequest:
       type: object
