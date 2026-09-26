@@ -201,11 +201,38 @@ func (UserRepo) SetRole(ctx context.Context, q Querier, userID, role string) err
 	return nil
 }
 
+// SetDisplayName 更新显示名(后台编辑用户用)。
+func (UserRepo) SetDisplayName(ctx context.Context, q Querier, userID, name string) error {
+	tag, err := q.Exec(ctx, `UPDATE users SET display_name = $2, updated_at = now() WHERE id = $1`, userID, name)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// SetEmail 更新邮箱(后台编辑用户用;空串 = 清空)。
+func (UserRepo) SetEmail(ctx context.Context, q Querier, userID, email string) error {
+	tag, err := q.Exec(ctx, `UPDATE users SET email = NULLIF($2, ''), updated_at = now() WHERE id = $1`, userID, email)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // MaxUserListLimit 是后台用户列表的单页上限。
 //
 // 设上限而不是"要多少给多少":后台列表会被前端一次拉全量(几千人),
 // 服务端不封顶就等于把"一次请求序列化几兆 JSON"的能力交给了 URL 参数。
 const MaxUserListLimit = 200
+
+// userScopeUnassigned 是 UserFilter.DeptScope 的"仅未分配"取值。
+const userScopeUnassigned = "unassigned"
 
 // UserFilter 是后台用户列表的筛选条件(7.x 管理后台)。
 type UserFilter struct {
@@ -214,6 +241,16 @@ type UserFilter struct {
 	// Role/Status 为空表示不过滤
 	Role   string
 	Status string
+	// DepartmentID 按部门筛选;为空表示不过滤(全局)。
+	// 当 DeptScope 为 "unassigned" 时忽略 DepartmentID,只返回无任何部门归属的用户。
+	DepartmentID string
+	// IncludeSubtree true=含该部门子树下用户;false=仅本部门。仅当 DepartmentID 非空时生效
+	IncludeSubtree bool
+	// DeptScope 控制在部门维度上的筛选方式:
+	//   "" | "dept"   — 按所选机构(默认,配 DepartmentID 与 IncludeSubtree);未传则全局
+	//   "all"         — 全量(含未分配用户),等价于不传 DepartmentID
+	//   "unassigned"  — 仅无任何部门归属的用户(如超管 admin)
+	DeptScope string
 	Limit  int
 	Offset int
 }
@@ -228,15 +265,49 @@ func escapeLike(s string) string {
 
 // userFilterWhere 生成筛选 WHERE 子句与参数(列表与计数**共用同一份**,
 // 否则"翻页翻着翻着总数对不上"这类问题会以最难看的方式暴露)。
+//
+// ⚠ args **恒 4 个元素**($1/$2/$3/$4),department_id **无条件**塞进第 4 位:
+//    - 不能只在 f.DepartmentID != "" 时 append —— 否则空部门路径 args 只剩 3 个,
+//      List/ListWithLogin 的 LIMIT $5 OFFSET $6 会越界(pgx 参数个数不符)。
+//    - 空部门路径(默认首屏)用 $4='' 短路,不真正过滤。
 func userFilterWhere(f UserFilter) (string, []any) {
 	search := "%" + escapeLike(strings.TrimSpace(f.Search)) + "%"
+	args := []any{
+		search,
+		strings.TrimSpace(f.Role),
+		strings.TrimSpace(f.Status),
+		strings.TrimSpace(f.DepartmentID),
+	}
 	where := `WHERE ($1 = '%%'
 	            OR username ILIKE $1 ESCAPE '\'
 	            OR display_name ILIKE $1 ESCAPE '\'
 	            OR coalesce(email, '') ILIKE $1 ESCAPE '\')
 	          AND ($2 = '' OR role = $2)
 	          AND ($3 = '' OR status = $3)`
-	return where, []any{search, strings.TrimSpace(f.Role), strings.TrimSpace(f.Status)}
+	switch strings.TrimSpace(f.DeptScope) {
+	case userScopeUnassigned:
+		// 仅未分配:无任何 user_departments 归属(如超管 admin)。
+		where += ` AND NOT EXISTS (
+			    SELECT 1 FROM user_departments ud WHERE ud.user_id = users.id)`
+	default: // "dept" / "" / "all" 都走按部门(或不按)的老逻辑
+		if f.DepartmentID != "" {
+			if f.IncludeSubtree {
+				// 闭包表:子树内全部部门的用户(无别名 id,base query 是 FROM users)
+				where += ` AND id IN (
+				    SELECT ud.user_id FROM user_departments ud
+				    JOIN department_closure c ON c.descendant_id = ud.department_id
+				    WHERE c.ancestor_id = $4)`
+			} else {
+				// 仅本部门直属用户
+				where += ` AND id IN (
+				    SELECT ud.user_id FROM user_departments ud WHERE ud.department_id = $4)`
+			}
+		} else {
+			// 空部门不过滤,$4 仍占位保证 LIMIT $5/$6 序号恒成立
+			where += ` AND ($4 = '' OR true)`
+		}
+	}
+	return where, args
 }
 
 // List 按筛选条件分页返回用户与总数。
@@ -265,7 +336,7 @@ func (UserRepo) List(ctx context.Context, q Querier, f UserFilter) ([]model.User
 
 	rows, err := q.Query(ctx, `SELECT `+userColumns+` FROM users `+where+`
  ORDER BY created_at DESC, id DESC
- LIMIT $4 OFFSET $5`, append(args, limit, f.Offset)...)
+ LIMIT $5 OFFSET $6`, append(args, limit, f.Offset)...)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -310,7 +381,7 @@ func (UserRepo) ListWithLogin(ctx context.Context, q Querier, f UserFilter) ([]A
 	}
 	rows, err := q.Query(ctx, `SELECT `+userColumns+`, last_login_at FROM users `+where+`
  ORDER BY created_at DESC, id DESC
- LIMIT $4 OFFSET $5`, append(args, limit, f.Offset)...)
+ LIMIT $5 OFFSET $6`, append(args, limit, f.Offset)...)
 	if err != nil {
 		return nil, 0, err
 	}

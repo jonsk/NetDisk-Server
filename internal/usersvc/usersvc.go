@@ -70,6 +70,9 @@ type UpdateInput struct {
 	Role   *string
 	Status *string
 	Phone  *string // 可空;nil=不改,非 nil=改(含空串=清空)
+	// 后台"编辑用户":显示名 / 邮箱。nil=不改,非 nil=改(邮箱空串=清空)。
+	DisplayName *string
+	Email       *string
 }
 
 // RoleAllowed 判断角色是否合法(与 model 常量同源,新增角色只改一处)。
@@ -181,7 +184,7 @@ func (s *Service) Update(ctx context.Context, in UpdateInput) (*model.User, erro
 	if strings.TrimSpace(in.UserID) == "" {
 		return nil, apierr.BadRequest(apierr.CodeInvalidArgument, "缺少用户 id")
 	}
-	if in.Role == nil && in.Status == nil && in.Phone == nil {
+	if in.Role == nil && in.Status == nil && in.Phone == nil && in.DisplayName == nil && in.Email == nil {
 		return nil, apierr.BadRequest(apierr.CodeInvalidArgument, "没有要修改的字段")
 	}
 	if in.Role != nil {
@@ -244,6 +247,27 @@ func (s *Service) Update(ctx context.Context, in UpdateInput) (*model.User, erro
 				}
 			}
 			if serr := s.Users.SetPhone(ctx, tx, in.UserID, newPhone); serr != nil {
+				return serr
+			}
+		}
+		if in.DisplayName != nil {
+			if derr := s.Users.SetDisplayName(ctx, tx, in.UserID, strings.TrimSpace(*in.DisplayName)); derr != nil {
+				return derr
+			}
+		}
+		if in.Email != nil {
+			email := strings.TrimSpace(*in.Email)
+			if email != "" {
+				// 邮箱唯一性预检(同 Phone 纪律,避免 PG 唯一冲突终止事务)。
+				if existing, eerr := s.Users.GetByEmail(ctx, tx, email); eerr == nil {
+					if existing.ID != in.UserID {
+						return accountConflict("email", email)
+					}
+				} else if !errors.Is(eerr, repo.ErrNotFound) {
+					return eerr
+				}
+			}
+			if serr := s.Users.SetEmail(ctx, tx, in.UserID, email); serr != nil {
 				return serr
 			}
 		}

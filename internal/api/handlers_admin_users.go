@@ -30,6 +30,9 @@ type adminUserCreateRequest struct {
 	DisplayName string `json:"display_name"`
 	Role        string `json:"role"`
 	Phone       string `json:"phone"`
+	// 建号即归属(可选):department_id 为初始所属机构,primary_department_id 可选主部门。
+	DepartmentID         string `json:"department_id"`
+	PrimaryDepartmentID  string `json:"primary_department_id"`
 }
 
 type adminUserUpdateRequest struct {
@@ -38,6 +41,9 @@ type adminUserUpdateRequest struct {
 	Role   *string `json:"role"`
 	Status *string `json:"status"`
 	Phone  *string `json:"phone"`
+	// 后台"编辑用户":显示名 / 邮箱。
+	DisplayName *string `json:"display_name"`
+	Email       *string `json:"email"`
 }
 
 // GET /api/v1/admin/users?search=&role=&status=&limit=&offset=
@@ -49,12 +55,21 @@ func (d Deps) handleAdminUserList(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	limit, _ := strconv.Atoi(strings.TrimSpace(q.Get("limit")))
 	offset, _ := strconv.Atoi(strings.TrimSpace(q.Get("offset")))
+	// include_subtree 缺省/非法值一律按 true 处理:点根机构时应返回全量(4 万人)而非仅直属。
+	// 仅当显式为 "false"/"0" 时才为 false。
+	includeSubtree := true
+	if v := strings.TrimSpace(q.Get("include_subtree")); v == "false" || v == "0" {
+		includeSubtree = false
+	}
 	f := repo.UserFilter{
-		Search: strings.TrimSpace(q.Get("search")),
-		Role:   strings.TrimSpace(q.Get("role")),
-		Status: strings.TrimSpace(q.Get("status")),
-		Limit:  limit,
-		Offset: offset,
+		Search:         strings.TrimSpace(q.Get("search")),
+		Role:           strings.TrimSpace(q.Get("role")),
+		Status:         strings.TrimSpace(q.Get("status")),
+		DepartmentID:   strings.TrimSpace(q.Get("department_id")),
+		IncludeSubtree: includeSubtree,
+		DeptScope:      strings.TrimSpace(q.Get("scope")),
+		Limit:          limit,
+		Offset:         offset,
 	}
 	rows, total, err := d.UserAdmin.List(r.Context(), f)
 	if err != nil {
@@ -92,7 +107,22 @@ func (d Deps) handleAdminUserCreate(w http.ResponseWriter, r *http.Request) {
 		apierr.Write(w, r, err)
 		return
 	}
+	// 建号即归属:create 成功后,若带部门则把用户挂到指定机构(与"设所属部门"同语义)。
+	if deptID := strings.TrimSpace(req.DepartmentID); deptID != "" {
+		if derr := d.setUserDepartmentOnCreate(r, created.ID, deptID, strings.TrimSpace(req.PrimaryDepartmentID)); derr != nil {
+			apierr.Write(w, r, derr)
+			return
+		}
+	}
 	apierr.WriteOK(w, r, http.StatusCreated, adminUserView(&repo.AdminUserRow{User: *created}))
+}
+
+// setUserDepartmentOnCreate 在建号后把用户挂到机构(创建 + 设为单一部门)。Org 未装配时静默跳过部门归属。
+func (d Deps) setUserDepartmentOnCreate(r *http.Request, userID, deptID, primaryID string) error {
+	if d.Org == nil {
+		return nil
+	}
+	return d.Org.SetUserDepartments(r.Context(), userID, []string{deptID}, primaryID)
 }
 
 // PATCH /api/v1/admin/users/{id}
@@ -114,6 +144,7 @@ func (d Deps) handleAdminUserUpdate(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	updated, err := d.UserAdmin.Update(r.Context(), usersvc.UpdateInput{
 		UserID: id, Role: req.Role, Status: req.Status, Phone: req.Phone,
+		DisplayName: req.DisplayName, Email: req.Email,
 	})
 	action := "user.update"
 	if req.Status != nil {
@@ -205,7 +236,7 @@ func (d Deps) handleGetUserDepartments(w http.ResponseWriter, r *http.Request) {
 	}
 	nodes := make([]map[string]any, 0, len(depts))
 	for _, dept := range depts {
-		nodes = append(nodes, deptView(dept))
+		nodes = append(nodes, deptView(dept, false))
 	}
 	apierr.WriteOK(w, r, http.StatusOK, map[string]any{
 		"departments":          nodes,
@@ -246,7 +277,7 @@ func (d Deps) handleSetUserDepartments(w http.ResponseWriter, r *http.Request) {
 	}
 	nodes := make([]map[string]any, 0, len(depts))
 	for _, dept := range depts {
-		nodes = append(nodes, deptView(dept))
+		nodes = append(nodes, deptView(dept, false))
 	}
 	apierr.WriteOK(w, r, http.StatusOK, map[string]any{
 		"departments":          nodes,
