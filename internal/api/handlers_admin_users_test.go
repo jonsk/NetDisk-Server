@@ -17,6 +17,7 @@ import (
 	"github.com/netdisk/netdisk/internal/db"
 	"github.com/netdisk/netdisk/internal/migrate"
 	"github.com/netdisk/netdisk/internal/model"
+	"github.com/netdisk/netdisk/internal/orgsvc"
 	"github.com/netdisk/netdisk/internal/repo"
 	"github.com/netdisk/netdisk/internal/usersvc"
 )
@@ -95,6 +96,7 @@ func setupUserAdmin(t *testing.T) *userAdminEnv {
 			_, _ = database.Pool.Exec(bg, `DELETE FROM files WHERE space_id IN (SELECT id FROM spaces WHERE owner_id=$1)`, id)
 			_, _ = database.Pool.Exec(bg, `DELETE FROM refresh_tokens WHERE user_id = $1`, id)
 			_, _ = database.Pool.Exec(bg, `DELETE FROM user_sso_bindings WHERE user_id = $1`, id)
+			_, _ = database.Pool.Exec(bg, `DELETE FROM user_departments WHERE user_id = $1`, id)
 			_, _ = database.Pool.Exec(bg, `DELETE FROM spaces WHERE owner_id = $1`, id)
 			_, _ = database.Pool.Exec(bg, `DELETE FROM users WHERE id = $1`, id)
 		}
@@ -109,6 +111,7 @@ func setupUserAdmin(t *testing.T) *userAdminEnv {
 			Tokens: tokens, DB: db.AsQuerier(database),
 		},
 		UserAdmin: &usersvc.Service{DB: db.AsQuerier(database), Users: repo.UserRepo{}, Log: testLogger()},
+		Org:       &orgsvc.Service{Depts: repo.DeptRepo{}, DB: db.AsQuerier(database)},
 	})
 	return &userAdminEnv{handler: h, db: database, tokens: tokens, adminID: adminID, userID: userID, base: base}
 }
@@ -384,4 +387,261 @@ func TestAdminUserRoleChangeAndBadInput(t *testing.T) {
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("不存在的用户应 404,实际 %d", rec.Code)
 	}
+}
+
+// ---- 00015 新增:手机号字段 ----
+
+// 建号带手机号:格式合法 → 201 且回显 phone;
+// 格式非法 → 400;手机号已被占用 → 409 且 details.field = "phone"。
+func TestAdminUserCreatePhone(t *testing.T) {
+	e := setupUserAdmin(t)
+	tok := e.adminToken(t)
+
+	// 先给已有用户设一个手机号(占用)
+	phone1 := "138" + e.base[len(e.base)-8:] + "0"
+	if len(phone1) < 11 {
+		phone1 = "13800000" + e.base[len(e.base)-3:]
+	}
+	// 确保手机号唯一(用 base 做后缀)
+	phone1 = "139" + fmtPhone(e.base)
+
+	// 合法手机号建号 → 201
+	rec := doJSONReq(t, e.handler, http.MethodPost, "/api/v1/admin/users", tok, map[string]any{
+		"username": e.base + "_phone1", "phone": phone1, "role": "user",
+	})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("合法手机号建号应 201,实际 %d %s", rec.Code, rec.Body.String())
+	}
+	var created struct {
+		ID    string `json:"id"`
+		Phone string `json:"phone"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &created)
+	if created.Phone != phone1 {
+		t.Fatalf("回显 phone 应为 %s,实际 %q", phone1, created.Phone)
+	}
+	t.Cleanup(func() {
+		bg := context.Background()
+		_, _ = e.db.Pool.Exec(bg, `DELETE FROM files WHERE space_id IN (SELECT id FROM spaces WHERE owner_id=$1)`, created.ID)
+		_, _ = e.db.Pool.Exec(bg, `DELETE FROM spaces WHERE owner_id=$1`, created.ID)
+		_, _ = e.db.Pool.Exec(bg, `DELETE FROM user_departments WHERE user_id=$1`, created.ID)
+		_, _ = e.db.Pool.Exec(bg, `DELETE FROM users WHERE id=$1`, created.ID)
+	})
+
+	// 手机号重复 → 409 且 field=phone
+	rec = doJSONReq(t, e.handler, http.MethodPost, "/api/v1/admin/users", tok, map[string]any{
+		"username": e.base + "_phone2", "phone": phone1, "role": "user",
+	})
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("手机号重复应 409,实际 %d %s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Code    string         `json:"code"`
+		Details map[string]any `json:"details"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	if body.Code != "account_conflict" || body.Details["field"] != "phone" {
+		t.Fatalf("应 account_conflict + field=phone,实际 %s %v", body.Code, body.Details)
+	}
+
+	// 格式非法 → 400
+	for _, bad := range []string{"123", "abc1234567", "10000000000", "12000000000"} {
+		rec = doJSONReq(t, e.handler, http.MethodPost, "/api/v1/admin/users", tok, map[string]any{
+			"username": e.base + "_bad", "phone": bad, "role": "user",
+		})
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("非法手机号 %q 应 400,实际 %d %s", bad, rec.Code, rec.Body.String())
+		}
+	}
+}
+
+// 更新手机号:设值 → 200;清空 → 200 且 phone 变空;与他人冲突 → 409。
+func TestAdminUserUpdatePhone(t *testing.T) {
+	e := setupUserAdmin(t)
+	tok := e.adminToken(t)
+
+	// 给另一用户占一个手机号
+	otherPhone := "137" + fmtPhone(e.base)
+	rec := doJSONReq(t, e.handler, http.MethodPost, "/api/v1/admin/users", tok, map[string]any{
+		"username": e.base + "_otherph", "phone": otherPhone, "role": "user",
+	})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("建占位用户应 201,实际 %d %s", rec.Code, rec.Body.String())
+	}
+	var other struct {
+		ID string `json:"id"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &other)
+	t.Cleanup(func() {
+		bg := context.Background()
+		_, _ = e.db.Pool.Exec(bg, `DELETE FROM files WHERE space_id IN (SELECT id FROM spaces WHERE owner_id=$1)`, other.ID)
+		_, _ = e.db.Pool.Exec(bg, `DELETE FROM spaces WHERE owner_id=$1`, other.ID)
+		_, _ = e.db.Pool.Exec(bg, `DELETE FROM user_departments WHERE user_id=$1`, other.ID)
+		_, _ = e.db.Pool.Exec(bg, `DELETE FROM users WHERE id=$1`, other.ID)
+	})
+
+	// 给目标用户设手机号
+	myPhone := "136" + fmtPhone(e.base)
+	rec = doJSONReq(t, e.handler, http.MethodPatch, "/api/v1/admin/users/"+e.userID, tok,
+		map[string]any{"phone": myPhone})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("设手机号应 200,实际 %d %s", rec.Code, rec.Body.String())
+	}
+	var body struct{ Phone string `json:"phone"` }
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	if body.Phone != myPhone {
+		t.Fatalf("回显 phone 应 %s,实际 %q", myPhone, body.Phone)
+	}
+
+	// 冲突:改成别人的手机号 → 409 field=phone
+	rec = doJSONReq(t, e.handler, http.MethodPatch, "/api/v1/admin/users/"+e.userID, tok,
+		map[string]any{"phone": otherPhone})
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("手机号冲突应 409,实际 %d %s", rec.Code, rec.Body.String())
+	}
+
+	// 清空手机号 → 200 且 phone 变空
+	rec = doJSONReq(t, e.handler, http.MethodPatch, "/api/v1/admin/users/"+e.userID, tok,
+		map[string]any{"phone": ""})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("清空手机号应 200,实际 %d %s", rec.Code, rec.Body.String())
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	if body.Phone != "" {
+		t.Fatalf("清空后 phone 应为空串,实际 %q", body.Phone)
+	}
+}
+
+// ---- 00015 新增:用户-部门关联(GET / PUT) ----
+
+// createTestDept 建一个测试部门并返回 id。
+func (e *userAdminEnv) createTestDept(t *testing.T, name string) string {
+	t.Helper()
+	rec := doJSONReq(t, e.handler, http.MethodPost, "/api/v1/admin/departments", e.adminToken(t),
+		map[string]any{"name": name})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("建部门 %q 应 201,实际 %d %s", name, rec.Code, rec.Body.String())
+	}
+	var d struct{ ID string `json:"id"` }
+	_ = json.Unmarshal(rec.Body.Bytes(), &d)
+	t.Cleanup(func() {
+		bg := context.Background()
+		_, _ = e.db.Pool.Exec(bg, `DELETE FROM user_departments WHERE department_id=$1`, d.ID)
+		_, _ = e.db.Pool.Exec(bg, `DELETE FROM department_closure WHERE descendant=$1`, d.ID)
+		_, _ = e.db.Pool.Exec(bg, `DELETE FROM departments WHERE id=$1`, d.ID)
+	})
+	return d.ID
+}
+
+// GET 部门:无关联时返回空数组 + 空 primary。
+func TestAdminUserGetDepartmentsEmpty(t *testing.T) {
+	e := setupUserAdmin(t)
+	tok := e.adminToken(t)
+
+	rec := doJSONReq(t, e.handler, http.MethodGet, "/api/v1/admin/users/"+e.userID+"/departments", tok, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("应 200,实际 %d %s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Departments         []map[string]any `json:"departments"`
+		PrimaryDepartmentID string           `json:"primary_department_id"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	if len(body.Departments) != 0 {
+		t.Fatalf("无关联时 departments 应为空,实际 %d 项", len(body.Departments))
+	}
+	if body.PrimaryDepartmentID != "" {
+		t.Fatalf("无关联时 primary 应为空,实际 %q", body.PrimaryDepartmentID)
+	}
+}
+
+// PUT 部门:覆盖式设置 → 200 且回显;
+// 二次设置不同部门 → 旧关联被清除(只看到新的);
+// 主部门不在列表中 → 400;空列表 → 400。
+func TestAdminUserSetDepartmentsOverwrite(t *testing.T) {
+	e := setupUserAdmin(t)
+	tok := e.adminToken(t)
+
+	deptA := e.createTestDept(t, "部门A_"+e.base)
+	deptB := e.createTestDept(t, "部门B_"+e.base)
+	deptC := e.createTestDept(t, "部门C_"+e.base)
+
+	// 第一次设置:deptA + deptB,主部门 = deptA
+	rec := doJSONReq(t, e.handler, http.MethodPut, "/api/v1/admin/users/"+e.userID+"/departments", tok,
+		map[string]any{"department_ids": []string{deptA, deptB}, "primary_department_id": deptA})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("设部门应 200,实际 %d %s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Departments         []map[string]any `json:"departments"`
+		PrimaryDepartmentID string           `json:"primary_department_id"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	if len(body.Departments) != 2 {
+		t.Fatalf("应回显 2 个部门,实际 %d", len(body.Departments))
+	}
+	if body.PrimaryDepartmentID != deptA {
+		t.Fatalf("主部门应为 %s,实际 %q", deptA, body.PrimaryDepartmentID)
+	}
+
+	// 第二次设置:只设 deptC(覆盖式)→ deptA/deptB 应被清除
+	rec = doJSONReq(t, e.handler, http.MethodPut, "/api/v1/admin/users/"+e.userID+"/departments", tok,
+		map[string]any{"department_ids": []string{deptC}, "primary_department_id": deptC})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("二次设部门应 200,实际 %d %s", rec.Code, rec.Body.String())
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	if len(body.Departments) != 1 {
+		t.Fatalf("覆盖式设置后应只剩 1 个部门,实际 %d", len(body.Departments))
+	}
+	if body.Departments[0]["id"] != deptC {
+		t.Fatalf("剩余部门应为 %s,实际 %v", deptC, body.Departments[0]["id"])
+	}
+
+	// GET 确认持久化
+	rec = doJSONReq(t, e.handler, http.MethodGet, "/api/v1/admin/users/"+e.userID+"/departments", tok, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET 应 200,实际 %d", rec.Code)
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	if len(body.Departments) != 1 || body.Departments[0]["id"] != deptC {
+		t.Fatalf("GET 确认应只有 deptC,实际 %v", body.Departments)
+	}
+}
+
+// 主部门校验:primary 不在 department_ids 中 → 400。
+func TestAdminUserSetDepartmentsPrimaryNotInList(t *testing.T) {
+	e := setupUserAdmin(t)
+	tok := e.adminToken(t)
+
+	deptA := e.createTestDept(t, "部门X_"+e.base)
+	deptB := e.createTestDept(t, "部门Y_"+e.base)
+
+	// primary = deptB 但列表只有 deptA → 400
+	rec := doJSONReq(t, e.handler, http.MethodPut, "/api/v1/admin/users/"+e.userID+"/departments", tok,
+		map[string]any{"department_ids": []string{deptA}, "primary_department_id": deptB})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("primary 不在列表中应 400,实际 %d %s", rec.Code, rec.Body.String())
+	}
+
+	// 空列表 → 400
+	rec = doJSONReq(t, e.handler, http.MethodPut, "/api/v1/admin/users/"+e.userID+"/departments", tok,
+		map[string]any{"department_ids": []string{}, "primary_department_id": ""})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("空部门列表应 400,实际 %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+// fmtPhone 从 base 串生成 8 位数字后缀(用于构造唯一手机号)。
+func fmtPhone(base string) string {
+	digits := "00000000"
+	for i := 0; i < len(base) && i < 8; i++ {
+		c := base[i]
+		if c >= '0' && c <= '9' {
+			digits = digits[:i] + string(c) + digits[i+1:]
+		} else {
+			digits = digits[:i] + string(rune('0'+int(c%10))) + digits[i+1:]
+		}
+	}
+	return digits
 }
