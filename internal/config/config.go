@@ -123,11 +123,11 @@ type Policy struct {
 }
 
 type WebUI struct {
-	AdminPrefix    string `yaml:"admin_prefix"`
-	LandingPrefix  string `yaml:"landing_prefix"`
+	AdminPrefix   string `yaml:"admin_prefix"`
+	LandingPrefix string `yaml:"landing_prefix"`
 	// AdminEnabled 管理后台开关:关闭后**不注册** /admin 静态页与全部 /api/v1/admin/* 路由,
 	// 该管理面完全不可达(404),用于规避 web 管理后台的网络攻击;客户端/业务 API 不受影响。
-	AdminEnabled   bool   `yaml:"admin_enabled"`
+	AdminEnabled bool `yaml:"admin_enabled"`
 }
 
 // Patrol 是对象泄漏/反向孤儿巡检(BE-S10-04 / 8.4)。
@@ -438,6 +438,20 @@ func pick(v, fallback RateLimit) RateLimit {
 	return v
 }
 
+// Auth 是本地账号的登录锁定策略(连续失败 N 次锁定一段时间)。
+//
+// 与 rate_limits.login 的关系:rate_limits 是按 IP 的**限速**(防单 IP 高频爆破),
+// 这里是按**账号**的锁定(失败 N 次后该账号临时禁用),两层互补。
+type Auth struct {
+	// FailedLoginThreshold 连续失败达到该次数后锁定账号;<=0 用默认 8。
+	FailedLoginThreshold int `yaml:"failed_login_threshold"`
+	// LoginLockDuration 锁定持续时长;<=0 用默认 5 分钟。
+	LoginLockDuration Duration `yaml:"login_lock_duration"`
+}
+
+// Std 返回锁定时长(秒级精度即可,便于 yaml/env 书写)。
+func (a Auth) LockDuration() time.Duration { return a.LoginLockDuration.Std() }
+
 type Log struct {
 	Level  string `yaml:"level"`
 	Format string `yaml:"format"`
@@ -455,6 +469,7 @@ type Config struct {
 	Storage    Storage    `yaml:"storage"`
 	Log        Log        `yaml:"log"`
 	RateLimits RateLimits `yaml:"rate_limits"`
+	Auth       Auth       `yaml:"auth"`
 }
 
 // Default 返回唯一一份默认值(纪律 2)。
@@ -537,6 +552,8 @@ func Default() *Config {
 			WebDAV:  RateLimit{PerSecond: 60, PerMinute: 3000, Cost: 1, ByIP: true},
 			Default: RateLimit{PerSecond: 20, PerMinute: 600, Cost: 1, ByIP: true},
 		},
+		// 账号锁定默认值:连续失败 8 次锁定 5 分钟(用户 2026-09 决策)
+		Auth: Auth{FailedLoginThreshold: 8, LoginLockDuration: Duration(5 * time.Minute)},
 	}
 }
 
@@ -689,6 +706,9 @@ func applyEnv(c *Config, getenv envReader) {
 	i64("NETDISK_PATROL_LEAK_ALERT_BYTES", &c.Patrol.LeakAlertBytes)
 	str("NETDISK_LOG_LEVEL", &c.Log.Level)
 	str("NETDISK_LOG_FORMAT", &c.Log.Format)
+	// 账号锁定策略(连续失败 N 次锁定一段时间)
+	num("NETDISK_AUTH_FAILED_LOGIN_THRESHOLD", &c.Auth.FailedLoginThreshold)
+	dur("NETDISK_AUTH_LOGIN_LOCK_DURATION", &c.Auth.LoginLockDuration)
 
 	if v, ok := getenv("NETDISK_TRUSTED_PROXIES"); ok {
 		var out []string
@@ -825,7 +845,6 @@ func (c *Config) Validate() error {
 			c.Storage.Backend)
 	}
 
-
 	// 限速:必须是"有上限"的配置。全 0 意味着该接口族**完全不限速**,
 	// 属于极易被忽略的高危配置(默认值有值,只有手写 yaml 才可能清零),
 	// 所以这里直接拒绝而不是容忍。
@@ -850,6 +869,14 @@ func (c *Config) Validate() error {
 		if rl.v.PerSecond == 0 && rl.v.PerMinute == 0 {
 			add("rate_limits.%s 至少需要一个窗口上限(全 0 = 该接口族不限速,危险)", rl.name)
 		}
+	}
+
+	// 账号锁定策略:必须是有意义的"限速"配置
+	if c.Auth.FailedLoginThreshold < 0 {
+		add("auth.failed_login_threshold 不能为负(0 用默认 8)")
+	}
+	if c.Auth.LoginLockDuration.Std() < 0 {
+		add("auth.login_lock_duration 不能为负(0 用默认 5 分钟)")
 	}
 
 	if len(errs) == 0 {

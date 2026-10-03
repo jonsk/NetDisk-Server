@@ -22,10 +22,12 @@ import (
 	"github.com/netdisk/netdisk/internal/repo"
 )
 
-// 默认锁定策略(6.3 + 4.4:失败尝试既要限速也要留审计)
+// 默认锁定策略(6.3 + 4.4:失败尝试既要限速也要留审计)。
+// 这些是 Service 字段未显式赋值时的回退默认值;线上通过配置项(auth.* / env)注入,
+// 见 cmd/netdisk/main.go。默认:连续失败 8 次锁定 5 分钟(用户 2026-09 决策)。
 const (
-	defaultFailThreshold = 5
-	defaultLockDuration  = 15 * time.Minute
+	defaultFailThreshold = 8
+	defaultLockDuration  = 5 * time.Minute
 )
 
 // DB 抽象"读走池、写走事务"的组合需求。

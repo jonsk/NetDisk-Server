@@ -205,11 +205,13 @@ func run() error {
 	repos := repo.New()
 	pol := credentials.DefaultPolicy()
 	authService := &authsvc.Service{
-		Users:  repos.User,
-		Spaces: repos.Space,
-		Tokens: tokens,
-		Policy: pol,
-		DB:     db.AsQuerier(database),
+		Users:         repos.User,
+		Spaces:        repos.Space,
+		Tokens:        tokens,
+		Policy:        pol,
+		DB:            db.AsQuerier(database),
+		FailThreshold: cfg.Auth.FailedLoginThreshold,
+		LockDuration:  cfg.Auth.LoginLockDuration.Std(),
 	}
 
 	// 5c) 上传用例服务(4.3 预留 + 6.10 ticket)
@@ -686,15 +688,15 @@ func run() error {
 	handler := api.New(api.Deps{
 		Cfg: cfg, Log: logger, DB: database, Redis: rdb, Tokens: tokens,
 		Cache: cacheClient, Limiter: limiter, Auth: authService,
-		Uploads:     uploadService,
-		WebDAV:      webdavAuth,
-		Org:         orgService,
-		Files:       fileService,
-		DirOps:      dirOpQueue,
+		Uploads: uploadService,
+		WebDAV:  webdavAuth,
+		Org:     orgService,
+		Files:   fileService,
+		DirOps:  dirOpQueue,
 		// 后台用户管理(FE-W-04):停用要立刻吊销会话,故它是一个用例服务而不是裸 SQL
 		UserAdmin: &usersvc.Service{DB: db.AsQuerier(database), Users: repos.User, Log: logger},
-		Spaces:   spaceService,
-		TUS:      tusService,
+		Spaces:    spaceService,
+		TUS:       tusService,
 		// Objects 直连对象存储(metrics 已拆除,不再包指标门面)
 		Objects:     objectStore,
 		Events:      eventHub,
