@@ -119,6 +119,9 @@ func Setup(t *testing.T) *Fixture {
 		Tokens: tokens,
 		Policy: pol,
 		DB:     db.AsQuerier(database),
+		// 锁定策略来自配置(测试显式给默认值,与线上 config.normalizeAuth 一致)
+		FailThreshold: 8,
+		LockDuration:  5 * time.Minute,
 	}
 
 	t.Cleanup(func() {

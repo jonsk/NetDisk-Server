@@ -231,6 +231,7 @@ func setupSecurityEnv(t *testing.T) *secEnv {
 	authSvc := &authsvc.Service{
 		Users: usersRepo, Spaces: spacesRepo, Tokens: tokens, Policy: pol,
 		DB: db.AsQuerier(database),
+		FailThreshold: 8, LockDuration: 5 * time.Minute,
 	}
 	davStore := &webdavauth.RedisStore{Cache: cacheClient}
 	davVerify := func(ctx context.Context, username, password string) (string, int64, error) {

@@ -83,6 +83,7 @@ func setupWebDAVEnv(t *testing.T) *webdavEnv {
 	authSvc := &authsvc.Service{
 		Users: repo.UserRepo{}, Spaces: repo.SpaceRepo{}, Tokens: tokens, Policy: pol,
 		DB: db.AsQuerier(database),
+		FailThreshold: 8, LockDuration: 5 * time.Minute,
 	}
 
 	// 把账密校验接上:复用 authsvc.VerifyCredentials(防枚举/锁定只有一份实现)

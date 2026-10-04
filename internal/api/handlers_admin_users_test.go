@@ -109,6 +109,7 @@ func setupUserAdmin(t *testing.T) *userAdminEnv {
 		Auth: &authsvc.Service{
 			Users: repo.UserRepo{}, Spaces: repo.SpaceRepo{},
 			Tokens: tokens, DB: db.AsQuerier(database),
+			FailThreshold: 8, LockDuration: 5 * time.Minute,
 		},
 		UserAdmin: &usersvc.Service{DB: db.AsQuerier(database), Users: repo.UserRepo{}, Log: testLogger()},
 		Org:       &orgsvc.Service{Depts: repo.DeptRepo{}, DB: db.AsQuerier(database)},

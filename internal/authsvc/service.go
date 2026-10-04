@@ -22,14 +22,6 @@ import (
 	"github.com/netdisk/netdisk/internal/repo"
 )
 
-// 默认锁定策略(6.3 + 4.4:失败尝试既要限速也要留审计)。
-// 这些是 Service 字段未显式赋值时的回退默认值;线上通过配置项(auth.* / env)注入,
-// 见 cmd/netdisk/main.go。默认:连续失败 8 次锁定 5 分钟(用户 2026-09 决策)。
-const (
-	defaultFailThreshold = 8
-	defaultLockDuration  = 5 * time.Minute
-)
-
 // DB 抽象"读走池、写走事务"的组合需求。
 //
 // 由 db.DB 通过适配器满足(见 Adapter);单测可用替身实现。
@@ -45,7 +37,9 @@ type Service struct {
 	Tokens *auth.Manager
 	Policy credentials.Policy
 	DB     DB
-	// FailThreshold / LockDuration 可按环境覆盖
+	// FailThreshold / LockDuration 是账号锁定策略,**严格来自配置**
+	// (config.Auth,已在 config.Load 归一化为有效值,见 cmd/netdisk/main.go 接线)。
+	// 本层不再兜底:0 属于上游配置错误,不应在这里被静默修正。
 	FailThreshold int
 	LockDuration  time.Duration
 	// Now 便于测试注入
@@ -141,7 +135,7 @@ func (s *Service) VerifyCredentials(ctx context.Context, login, password string)
 			return nil, apierr.Unauthorized(apierr.CodeUnauthorized, "该账号未设置密码,请使用企业微信/钉钉扫码登录")
 		}
 		// 记录失败并在达阈值后锁定
-		if _, ferr := s.Users.LoginFailed(ctx, s.DB, creds.UserID, s.failThreshold(), s.lockDuration()); ferr != nil {
+		if _, ferr := s.Users.LoginFailed(ctx, s.DB, creds.UserID, s.FailThreshold, s.LockDuration); ferr != nil {
 			return nil, apierr.Internal(ferr)
 		}
 		return nil, ErrInvalidCredentials
@@ -281,20 +275,6 @@ func (s *Service) now() time.Time {
 		return s.Now()
 	}
 	return time.Now()
-}
-
-func (s *Service) failThreshold() int {
-	if s.FailThreshold > 0 {
-		return s.FailThreshold
-	}
-	return defaultFailThreshold
-}
-
-func (s *Service) lockDuration() time.Duration {
-	if s.LockDuration > 0 {
-		return s.LockDuration
-	}
-	return defaultLockDuration
 }
 
 // newJTI 生成 16 字节随机 id(与 auth.Manager 内部算法一致,便于对齐日志)。

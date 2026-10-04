@@ -128,6 +128,7 @@ DELETE FROM file_objects WHERE hash_sha256 IN (
 	authSvc := &authsvc.Service{
 		Users: users, Spaces: spaces, Tokens: tokens, Policy: pol,
 		DB: db.AsQuerier(database),
+		FailThreshold: 8, LockDuration: 5 * time.Minute,
 	}
 	// 账密校验复用 authsvc.VerifyCredentials(防枚举/锁定只有一份实现)
 	verify := func(ctx context.Context, username, pass string) (string, int64, error) {

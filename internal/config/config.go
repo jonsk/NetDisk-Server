@@ -438,14 +438,24 @@ func pick(v, fallback RateLimit) RateLimit {
 	return v
 }
 
+// 账号锁定默认值(唯一一份,纪律 2):连续失败 8 次锁定 5 分钟(用户 2026-09 决策)。
+// 业务层(authsvc/repo)**不再各自兜底**,一律使用本包归一化后的配置值。
+const (
+	DefaultAuthFailThreshold = 8
+	DefaultAuthLockDuration  = 5 * time.Minute
+)
+
 // Auth 是本地账号的登录锁定策略(连续失败 N 次锁定一段时间)。
 //
 // 与 rate_limits.login 的关系:rate_limits 是按 IP 的**限速**(防单 IP 高频爆破),
 // 这里是按**账号**的锁定(失败 N 次后该账号临时禁用),两层互补。
+//
+// 归一化:Load 后 <=0 一律回落默认(见 normalizeAuth),因此下游拿到的恒为有效值,
+// 无需在业务层重复兜底。
 type Auth struct {
-	// FailedLoginThreshold 连续失败达到该次数后锁定账号;<=0 用默认 8。
+	// FailedLoginThreshold 连续失败达到该次数后锁定账号;<=0 归一化为默认 8。
 	FailedLoginThreshold int `yaml:"failed_login_threshold"`
-	// LoginLockDuration 锁定持续时长;<=0 用默认 5 分钟。
+	// LoginLockDuration 锁定持续时长;<=0 归一化为默认 5 分钟。
 	LoginLockDuration Duration `yaml:"login_lock_duration"`
 }
 
@@ -552,8 +562,8 @@ func Default() *Config {
 			WebDAV:  RateLimit{PerSecond: 60, PerMinute: 3000, Cost: 1, ByIP: true},
 			Default: RateLimit{PerSecond: 20, PerMinute: 600, Cost: 1, ByIP: true},
 		},
-		// 账号锁定默认值:连续失败 8 次锁定 5 分钟(用户 2026-09 决策)
-		Auth: Auth{FailedLoginThreshold: 8, LoginLockDuration: Duration(5 * time.Minute)},
+		// 账号锁定默认值(唯一一份):连续失败 8 次锁定 5 分钟(用户 2026-09 决策)
+		Auth: Auth{FailedLoginThreshold: DefaultAuthFailThreshold, LoginLockDuration: Duration(DefaultAuthLockDuration)},
 	}
 }
 
@@ -585,6 +595,7 @@ func load(path string, getenv envReader) (*Config, error) {
 
 	applyEnv(c, getenv)
 	normalizeStorageBackend(c)
+	normalizeAuth(c)
 	return c, nil
 }
 
@@ -597,6 +608,20 @@ func normalizeStorageBackend(c *Config) {
 	c.Storage.Backend = strings.ToLower(strings.TrimSpace(c.Storage.Backend))
 	if c.Storage.Backend == "" {
 		c.Storage.Backend = BackendFS
+	}
+}
+
+// normalizeAuth 把账号锁定策略归一化为有效值(<=0 回落默认)。
+//
+// 为什么放在 Load:锁定策略的下游(repo.LoginFailed 的 SQL、authsvc)一律"严格按
+// 配置"执行、不再各自兜底,所以必须在此处保证值 > 0 —— 否则 0 会让
+// `failed_login_count + 1 >= 0` 恒真,变成"一次失败即锁定"。
+func normalizeAuth(c *Config) {
+	if c.Auth.FailedLoginThreshold <= 0 {
+		c.Auth.FailedLoginThreshold = DefaultAuthFailThreshold
+	}
+	if c.Auth.LoginLockDuration.Std() <= 0 {
+		c.Auth.LoginLockDuration = Duration(DefaultAuthLockDuration)
 	}
 }
 
@@ -871,12 +896,13 @@ func (c *Config) Validate() error {
 		}
 	}
 
-	// 账号锁定策略:必须是有意义的"限速"配置
-	if c.Auth.FailedLoginThreshold < 0 {
-		add("auth.failed_login_threshold 不能为负(0 用默认 8)")
+	// 账号锁定策略:load 后 normalizeAuth 已保证 > 0;此处只做不变量断言
+	// (防未来重构绕过 Load 直接构造 Config,把 0 带进"严格按配置"的下游)。
+	if c.Auth.FailedLoginThreshold <= 0 {
+		add("auth.failed_login_threshold 必须 > 0(应由 normalizeAuth 归一化为默认 8)")
 	}
-	if c.Auth.LoginLockDuration.Std() < 0 {
-		add("auth.login_lock_duration 不能为负(0 用默认 5 分钟)")
+	if c.Auth.LoginLockDuration.Std() <= 0 {
+		add("auth.login_lock_duration 必须 > 0(应由 normalizeAuth 归一化为默认 5 分钟)")
 	}
 
 	if len(errs) == 0 {

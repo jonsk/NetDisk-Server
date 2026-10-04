@@ -448,13 +448,11 @@ func (UserRepo) LoginSucceeded(ctx context.Context, q Querier, userID string) er
 //
 // 锁定策略在**数据库**层生效(而不是仅靠 Redis 计数),这样 Redis 重启不会
 // 让攻击者获得无限次尝试机会 —— 与 10.7「认证必须拒绝,不得降级」一致。
+//
+// threshold/lockFor 严格按调用方(配置)传入:本层不再兜底。配置层
+// (config.normalizeAuth)已保证两者 > 0;若传入 0/负值,SQL 会退化为
+// "一次失败即锁定" —— 那是上游配置错误,不应在此静默修正为另一组魔数。
 func (UserRepo) LoginFailed(ctx context.Context, q Querier, userID string, threshold int, lockFor time.Duration) (int, error) {
-	if threshold <= 0 {
-		threshold = 5
-	}
-	if lockFor <= 0 {
-		lockFor = 15 * time.Minute
-	}
 	var count int
 	err := q.QueryRow(ctx,
 		`UPDATE users

@@ -103,6 +103,7 @@ func setupAuth(t *testing.T) *authFixture {
 
 	svc := &authsvc.Service{
 		Users: users, Spaces: repo.SpaceRepo{}, Tokens: tokens, Policy: pol, DB: db.AsQuerier(database),
+		FailThreshold: cfg.Auth.FailedLoginThreshold, LockDuration: cfg.Auth.LoginLockDuration.Std(),
 	}
 
 	router := api.New(api.Deps{
