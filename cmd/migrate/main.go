@@ -53,8 +53,9 @@ func main() {
 
 		// 初始化数据库时自动建立初始管理员账号(幂等;admin/admin123,env 可覆盖)。
 		res, serr := migrate.SeedAdmin(ctx, database.Pool, migrate.SeedOptions{
-			Username: envOr("NETDISK_BOOTSTRAP_ADMIN_USERNAME", "admin"),
-			Password: envOr("NETDISK_BOOTSTRAP_ADMIN_PASSWORD", "admin123"),
+			Username:          envOr("NETDISK_BOOTSTRAP_ADMIN_USERNAME", "admin"),
+			Password:          envOr("NETDISK_BOOTSTRAP_ADMIN_PASSWORD", "admin123"),
+			DefaultQuotaBytes: cfg.Policy.DefaultQuotaBytes,
 		})
 		if serr != nil {
 			fail(fmt.Errorf("播种初始管理员失败: %w", serr))

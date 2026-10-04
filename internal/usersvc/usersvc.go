@@ -49,6 +49,9 @@ type Service struct {
 	DB    DB
 	Users repo.UserRepo
 	Log   *slog.Logger
+	// DefaultQuotaBytes 是新建账号个人空间的默认配额(0 = 不限制),
+	// 来自 policy.default_quota_bytes;由装配方注入。
+	DefaultQuotaBytes int64
 }
 
 // CreateInput 是后台建号入参。
@@ -158,6 +161,7 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (*model.User, erro
 		u, cerr := s.Users.Create(ctx, tx, repo.CreateInput{
 			Username: username, Email: email, DisplayName: display,
 			Role: role, Status: model.StatusActive, Phone: phone,
+			DefaultQuotaBytes: s.DefaultQuotaBytes,
 		})
 		if cerr != nil {
 			// 预检与插入之间仍有极小的并发窗口:此时按 23505 兜底,

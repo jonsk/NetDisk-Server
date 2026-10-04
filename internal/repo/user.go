@@ -102,6 +102,9 @@ type CreateInput struct {
 	Role        string
 	Status      string
 	Phone       string // 可空;空串 = NULL
+	// DefaultQuotaBytes 是新建个人空间的配额(0 = 不限制)。由调用方从
+	// policy.default_quota_bytes 传入 —— repo 层不读配置,配置的唯一来源在 config。
+	DefaultQuotaBytes int64
 }
 
 // Create 建用户并**自动创建个人空间**(4.1 V2.14:个人配额挂在 personal 空间行)。
@@ -144,11 +147,11 @@ func (UserRepo) Create(ctx context.Context, tx pgx.Tx, in CreateInput) (*model.U
 		return nil, err
 	}
 
-	// 个人空间:配额 0 = 不限制;名称遵循 4.3「{display_name}的网盘」
+	// 个人空间:配额取自 policy.default_quota_bytes(0 = 不限制);名称遵循 4.3「{display_name}的网盘」
 	spaceName := u.DisplayName + "的网盘"
 	if _, err := tx.Exec(ctx,
-		`INSERT INTO spaces (kind, owner_id, name, quota_bytes) VALUES ('personal', $1, $2, 0)`,
-		u.ID, spaceName); err != nil {
+		`INSERT INTO spaces (kind, owner_id, name, quota_bytes) VALUES ('personal', $1, $2, $3)`,
+		u.ID, spaceName, in.DefaultQuotaBytes); err != nil {
 		return nil, fmt.Errorf("创建个人空间失败: %w", err)
 	}
 

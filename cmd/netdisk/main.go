@@ -164,8 +164,9 @@ func run() error {
 		// 初始化数据库时自动建立初始管理员账号(幂等;admin/admin123,可用 env 覆盖)。
 		// 放在迁移之后:建表完成才播种,重复启动仅跳过不再覆盖。
 		if res, serr := migrate.SeedAdmin(ctx, database.Pool, migrate.SeedOptions{
-			Username: envOr("NETDISK_BOOTSTRAP_ADMIN_USERNAME", "admin"),
-			Password: envOr("NETDISK_BOOTSTRAP_ADMIN_PASSWORD", "admin123"),
+			Username:          envOr("NETDISK_BOOTSTRAP_ADMIN_USERNAME", "admin"),
+			Password:          envOr("NETDISK_BOOTSTRAP_ADMIN_PASSWORD", "admin123"),
+			DefaultQuotaBytes: cfg.Policy.DefaultQuotaBytes,
 		}); serr != nil {
 			// 播种失败不算致命(可能已有同名用户或口令策略冲突),但要打日志暴露。
 			logger.Warn("初始化管理员账号播种失败", "err", serr)
@@ -694,9 +695,10 @@ func run() error {
 		Files:   fileService,
 		DirOps:  dirOpQueue,
 		// 后台用户管理(FE-W-04):停用要立刻吊销会话,故它是一个用例服务而不是裸 SQL
-		UserAdmin: &usersvc.Service{DB: db.AsQuerier(database), Users: repos.User, Log: logger},
-		Spaces:    spaceService,
-		TUS:       tusService,
+		UserAdmin: &usersvc.Service{DB: db.AsQuerier(database), Users: repos.User, Log: logger,
+			DefaultQuotaBytes: cfg.Policy.DefaultQuotaBytes},
+		Spaces: spaceService,
+		TUS:    tusService,
 		// Objects 直连对象存储(metrics 已拆除,不再包指标门面)
 		Objects:     objectStore,
 		Events:      eventHub,

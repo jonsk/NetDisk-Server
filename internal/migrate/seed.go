@@ -37,6 +37,9 @@ type SeedOptions struct {
 	DisplayName string
 	// Role 平台角色;空则用 super_admin。
 	Role string
+	// DefaultQuotaBytes 是初始管理员个人空间的配额(0 = 不限制),
+	// 来自 policy.default_quota_bytes。
+	DefaultQuotaBytes int64
 }
 
 // SeedResult 播种结果(供调用方打日志)。
@@ -51,8 +54,9 @@ type SeedResult struct {
 
 // SeedAdmin 在已迁移的数据库上播种初始管理员账号(幂等)。
 //
-// 流程:先查同名用户,存在则跳过;否则在同一事务内创建用户(自动附带个人空间
-// 与根目录,见 repo.UserRepo.Create)并设置口令。
+// 流程:先查同名用户,存在则跳过创建但仍**幂等地确保其归属根机构**(修复历史库);
+// 否则在同一事务内创建用户(自动附带个人空间与根目录,见 repo.UserRepo.Create)、
+// 设置口令,并把它加入根机构(00016 种下的"我的机构")。
 func SeedAdmin(ctx context.Context, pool *pgxpool.Pool, o SeedOptions) (*SeedResult, error) {
 	if strings.TrimSpace(o.Username) == "" {
 		o.Username = "admin"
@@ -78,8 +82,14 @@ func SeedAdmin(ctx context.Context, pool *pgxpool.Pool, o SeedOptions) (*SeedRes
 	}
 
 	users := repo.UserRepo{}
+	depts := repo.DeptRepo{}
 	existing, err := users.GetByUsername(ctx, pool, o.Username)
 	if err == nil && existing != nil {
+		// 已存在:仍幂等地补一次"默认归属根机构"(修复历史库 / 首次升级时
+		// 尚未归属的 admin),再返回 skipped。
+		if err := ensureDefaultRootDepartment(ctx, pool, depts, existing.ID); err != nil {
+			return nil, fmt.Errorf("确保初始管理员归属根机构失败: %w", err)
+		}
 		return &SeedResult{Username: o.Username, Skipped: true}, nil
 	}
 	if err != nil && !errors.Is(err, repo.ErrNotFound) {
@@ -93,16 +103,21 @@ func SeedAdmin(ctx context.Context, pool *pgxpool.Pool, o SeedOptions) (*SeedRes
 	defer tx.Rollback(ctx)
 
 	u, err := users.Create(ctx, tx, repo.CreateInput{
-		Username:    o.Username,
-		DisplayName: o.DisplayName,
-		Role:        o.Role,
-		Status:      model.StatusActive,
+		Username:          o.Username,
+		DisplayName:       o.DisplayName,
+		Role:              o.Role,
+		Status:            model.StatusActive,
+		DefaultQuotaBytes: o.DefaultQuotaBytes,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("创建初始管理员失败: %w", err)
 	}
 	if err := users.SetPassword(ctx, tx, u.ID, hash); err != nil {
 		return nil, fmt.Errorf("设置初始管理员口令失败: %w", err)
+	}
+	// admin 默认归属根机构(需求:超管默认属于根机构)。
+	if err := ensureDefaultRootDepartment(ctx, tx, depts, u.ID); err != nil {
+		return nil, fmt.Errorf("把初始管理员加入根机构失败: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("提交播种事务失败: %w", err)
@@ -112,4 +127,27 @@ func SeedAdmin(ctx context.Context, pool *pgxpool.Pool, o SeedOptions) (*SeedRes
 		Username:            o.Username,
 		UsedDefaultPassword: o.Password == "admin123",
 	}, nil
+}
+
+// ensureDefaultRootDepartment 让用户默认归属根机构,仅当其当前**不属于任何机构**时生效。
+//
+// 根机构由迁移 00016 种下("我的机构");不存在时静默跳过(不阻断播种/启动)。
+// 幂等且不覆盖:已有归属则尊重现状,避免把运维手工调整过的归属打回根。
+func ensureDefaultRootDepartment(ctx context.Context, q repo.Querier, depts repo.DeptRepo, userID string) error {
+	owned, err := depts.DepartmentsOfUser(ctx, q, userID)
+	if err != nil {
+		return err
+	}
+	if len(owned) > 0 {
+		return nil
+	}
+	roots, err := depts.Children(ctx, q, "")
+	if err != nil {
+		return err
+	}
+	if len(roots) == 0 {
+		return nil
+	}
+	rootID := roots[0].ID
+	return depts.SetUserDepartments(ctx, q, userID, []string{rootID}, rootID)
 }
