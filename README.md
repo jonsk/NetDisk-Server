@@ -125,7 +125,7 @@ go run ./cmd/netdisk
 |---|---|
 | `REST /api/v1/*` | 认证、用户、部门、空间、文件、目录、上传、下载、分享、事件 |
 | `下载 & Range` | 流式 `ServeContent`；字节级 Range（200/206/416）；If-Match/If-None-Match/If-Range 条件请求 |
-| `TUS /uploads/*` | 分片、断点续传、ticket 复用、暂存区回收、磁盘水位（>90% → 507） |
+| `TUS /uploads/*` | 分片、断点续传、ticket 复用、暂存区回收 |
 | `WebDAV /dav/*` | `x/net/webdav` + PUT 拦截走定稿（≤100MB）；LOCK 语义自研补齐 |
 | `SSE /sync/events` | 远端变更实时推送（自回声抑制） |
 | `cursor /changes` | 游标双态增量拉取，全局 `change_seq` |

@@ -117,6 +117,7 @@ func (f *FS) StageAppend(ctx context.Context, uploadID string, expectOffset int6
 	}
 	fh, err := os.OpenFile(p, os.O_CREATE|os.O_WRONLY, f.fileMode)
 	if err != nil {
+		f.logDiskWriteFailure("open-stage", p, err)
 		return 0, fmt.Errorf("storage: 打开暂存文件失败: %w", err)
 	}
 	defer func() { _ = fh.Close() }()
@@ -138,6 +139,7 @@ func (f *FS) StageAppend(ctx context.Context, uploadID string, expectOffset int6
 		return expectOffset + n, fmt.Errorf("storage: 追写分片失败: %w", err)
 	}
 	if err := fh.Sync(); err != nil {
+		f.logDiskWriteFailure("fsync-stage", p, err)
 		return expectOffset + n, fmt.Errorf("storage: 刷盘失败: %w", err)
 	}
 	return expectOffset + n, nil

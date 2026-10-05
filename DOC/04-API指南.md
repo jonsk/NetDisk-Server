@@ -129,7 +129,6 @@ Authorization: Bearer <access_token>
 
 - **断点续传**：客户端上报 `Upload-Offset`，服务端从该偏移继续；
 - **ticket 复用**：上传票可在定稿前复用，幂等；
-- **磁盘水位**：暂存区用量 ≥ 阈值（默认 90%）返回 **507 Insufficient Storage**；
 - **暂存回收**：超时未完成的暂存文件由后台任务（约 10 分钟一轮）回收。
 
 ---
@@ -149,7 +148,7 @@ Authorization: Bearer <access_token>
 
 | 路径 | 说明 |
 |---|---|
-| `GET /healthz` | 存活检查（200） |
+| `GET /healthz` | 存活检查（200）；含 `postgres`/`redis` 状态 |
 | `GET /metrics` | Prometheus 指标；默认仅回环 / 可信代理，跨机需 `NETDISK_METRICS_TOKEN` Bearer |
 | `GET /api/v1/version` | 版本 |
 
@@ -168,7 +167,6 @@ Authorization: Bearer <access_token>
 | 409 | 冲突 | 版本冲突、重名（大小写不敏感判重） |
 | 429 | 限速 | 需退避重试 |
 | 500 | 服务端错误 | 见《日常运维》故障处置 |
-| 507 | 存储空间不足 | 磁盘水位达阈值 |
 
 **客户端对 429 的处置**：项目经验是"429 退避重试是必须的"——实测清理探针文件时
 `DELETE` 撞 `file_write` 限速，不退避会**静默少删**；上传建任务撞限速不退避会表现为"文件永远传不上去"。

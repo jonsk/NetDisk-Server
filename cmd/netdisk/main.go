@@ -85,8 +85,6 @@ func envOr(key, def string) string {
 type objectStorager interface {
 	storage.Storager
 	storage.Sponsorable
-	// uploadsvc.DiskUsage(水位保护用;远端后端返回错误 → fail-open)
-	Usage() (total, free int64, err error)
 	// uploadsvc.StageStore(暂存回收)
 	ListStageFiles() ([]storage.StageFile, error)
 	StageRemove(uploadID string) error
@@ -277,6 +275,9 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	// 落盘失败(典型是磁盘写满 ENOSPC)时把 errno 打进日志:访问日志只有
+	// `status=500`,看不到"No space left on device"这条真正有用的信息。
+	localFS.Log = logger
 	var objectStore objectStorager = localFS
 
 	// 5h-0b) 对象区临时文件回收(BE-S5-10):10 分钟一轮,与暂存回收同频。

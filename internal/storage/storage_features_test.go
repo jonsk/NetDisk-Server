@@ -20,7 +20,7 @@ import (
 // 把原先只被间接覆盖或完全没覆盖的能力补上)。
 //
 // 为什么单独一个文件:这些不是"某个接口的正常路径",而是**运维与后端契约**上必须成立的性质 ——
-// 磁盘水位(容量/剩余)、对象占用统计(跳过临时文件)、0 字节对象、Range(可寻址流)、
+// 对象占用统计(跳过临时文件)、0 字节对象、Range(可寻址流)、
 // 后端标识落库、并发提交同一对象。少了任何一条,配置指南里写的东西就成了"文档说行,实际没验证"。
 
 // ① 后端标识:这个字符串会写进 `file_objects.storage_backend`,巡检也按它分支
@@ -37,23 +37,7 @@ func TestBackendIdentifier(t *testing.T) {
 	}
 }
 
-// ② 磁盘容量/剩余:**水位保护**(disk_watermark_percent)唯一的输入。
-// 拿不到真实数值时水位保护会静默失效 —— 那正是磁盘写满时才暴露的故障。
-func TestUsageReportsRealDiskCapacity(t *testing.T) {
-	f := newFS(t)
-	total, free, err := f.Usage()
-	if err != nil {
-		t.Fatalf("Usage 应能拿到卷容量: %v", err)
-	}
-	if total <= 0 {
-		t.Fatalf("总容量应 > 0,实际 %d", total)
-	}
-	if free < 0 || free > total {
-		t.Fatalf("剩余容量应在 [0,total] 内,实际 free=%d total=%d", free, total)
-	}
-}
-
-// ③ 对象占用统计:跳过原子写的临时文件(.tmp-*),否则"正在上传"期间的巡检会误报泄漏
+// ② 对象占用统计:跳过原子写的临时文件(.tmp-*),否则"正在上传"期间的巡检会误报泄漏
 // (差值抖动 → 看起来像泄漏了几个 T)。
 func TestObjectUsageSkipsTempFiles(t *testing.T) {
 	f := newFS(t)

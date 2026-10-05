@@ -111,13 +111,6 @@ policy:
   webdav_put_max_bytes: 104857600   # WebDAV PUT ≤100MB,超出提示走 TUS / WebDAV PUT ≤100MB, larger → TUS
   default_quota_bytes: 0     # 0 = 不限制;新建个人空间配额 / 0 = unlimited; quota of new personal spaces
   object_delete_delay_hours: 24     # 对象归零后的延迟删除窗口 / delay window after object refcount hits zero
-  # 9.1:存储卷已用百分比达到它就**拒绝新上传**(507 storage_full)。
-  # §9.1: when storage volume usage reaches this %, REJECT new uploads (507 storage_full).
-  # 0 = 用默认 90;100 = **关闭**(要关闭就显式写 100,不要写 0 —— 配置里的 0 更像"没填");
-  # 0 = use default 90; 100 = DISABLED (write 100 explicitly to disable, not 0 — 0 looks like "unset");
-  # 读不到容量时 fail-open:一次 statfs 失败不该让全站不能上传。
-  # Fail-open when capacity unreadable: one statfs failure must not block all uploads.
-  disk_watermark_percent: 90
   sync_feed_keep_days: 90    # 变更流保留期(游标过期判据之一) / change-feed retention (one cursor-expiry criterion)
   cursor_offline_days: 30    # 离线游标保留期(超期需全量重拉) / offline cursor retention (expiry → full resync)
   # 6.11:目录级操作(移动/删除子树)≤该行数走同步事务;超过转异步任务并返回 task_id

@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -115,9 +116,24 @@ func HexSHA256(hash string) (string, error) {
 type FS struct {
 	// Root 是数据根目录(生产: /opt/netdisk/data)
 	Root string
+	// Log 是可选的日志出口:落盘失败(典型是磁盘写满 ENOSPC)时把原因打印出来。
+	//
+	// 为什么在这里记而不是只靠 HTTP 访问日志:访问日志只有 `status=500`,
+	// 看不到"No space left on device"这条真正有用的信息。落盘是唯一知道
+	// errno 的地方,所以在这一层把 err 打出来。为 nil 时静默(测试不受影响)。
+	Log *slog.Logger
 	// dirMode/fileMode 便于测试与运维按需收紧权限
 	dirMode  os.FileMode
 	fileMode os.FileMode
+}
+
+// logDiskWriteFailure 在落盘失败时打印原因(磁盘写满这类问题此前只体现为
+// 一个 5xx,访问日志看不到 errno)。Log 为 nil 时不做任何事。
+func (f *FS) logDiskWriteFailure(op, path string, err error) {
+	if f.Log == nil || err == nil {
+		return
+	}
+	f.Log.Error("磁盘写入失败", "op", op, "path", path, "err", err)
 }
 
 // NewFS 构造本地磁盘后端并确保根目录存在。
@@ -190,6 +206,7 @@ func (f *FS) Write(ctx context.Context, hashSHA256 string, r io.Reader, size int
 		return 0, err
 	}
 	if err := os.MkdirAll(filepath.Dir(dst), f.dirMode); err != nil {
+		f.logDiskWriteFailure("mkdir", filepath.Dir(dst), err)
 		return 0, fmt.Errorf("storage: 创建对象目录失败: %w", err)
 	}
 
@@ -209,6 +226,7 @@ func (f *FS) Write(ctx context.Context, hashSHA256 string, r io.Reader, size int
 
 	tmp, err := os.CreateTemp(filepath.Dir(dst), ".tmp-*")
 	if err != nil {
+		f.logDiskWriteFailure("create-temp", filepath.Dir(dst), err)
 		return 0, fmt.Errorf("storage: 创建临时对象失败: %w", err)
 	}
 	tmpName := tmp.Name()
@@ -218,9 +236,11 @@ func (f *FS) Write(ctx context.Context, hashSHA256 string, r io.Reader, size int
 	written, copyErr := f.copyWithContext(ctx, tmp, r)
 	closeErr := tmp.Close()
 	if copyErr != nil {
+		f.logDiskWriteFailure("write", tmpName, copyErr)
 		return written, fmt.Errorf("storage: 写入临时对象失败: %w", copyErr)
 	}
 	if closeErr != nil {
+		f.logDiskWriteFailure("close", tmpName, closeErr)
 		return written, fmt.Errorf("storage: 关闭临时对象失败: %w", closeErr)
 	}
 	if written != size {
@@ -241,6 +261,7 @@ func (f *FS) Write(ctx context.Context, hashSHA256 string, r io.Reader, size int
 		if st, serr := os.Stat(dst); serr == nil && st.Size() == size {
 			return size, nil
 		}
+		f.logDiskWriteFailure("rename", dst, err)
 		return written, fmt.Errorf("storage: 提交对象失败: %w", err)
 	}
 	return written, nil
@@ -261,6 +282,8 @@ func (f *FS) copyWithContext(ctx context.Context, dst io.Writer, src io.Reader) 
 			w, werr := dst.Write(buf[:n])
 			total += int64(w)
 			if werr != nil {
+				// 磁盘写满(ENOSPC)最终就是在 write 系统调用这里暴露的。
+				f.logDiskWriteFailure("write", "", werr)
 				return total, werr
 			}
 			if w != n {
@@ -287,6 +310,7 @@ func (f *FS) StageFrom(ctx context.Context, r io.Reader) (string, string, int64,
 	}
 	tmp, err := os.CreateTemp(dir, "stage-*")
 	if err != nil {
+		f.logDiskWriteFailure("create-stage", dir, err)
 		return "", "", 0, fmt.Errorf("storage: 创建暂存文件失败: %w", err)
 	}
 	name := tmp.Name()
@@ -295,10 +319,12 @@ func (f *FS) StageFrom(ctx context.Context, r io.Reader) (string, string, int64,
 	written, cerr := f.copyWithContext(ctx, hh.Tee(tmp), r)
 	closeErr := tmp.Close()
 	if cerr != nil {
+		f.logDiskWriteFailure("write-stage", name, cerr)
 		_ = os.Remove(name)
 		return "", "", 0, fmt.Errorf("storage: 写入暂存文件失败: %w", cerr)
 	}
 	if closeErr != nil {
+		f.logDiskWriteFailure("close-stage", name, closeErr)
 		_ = os.Remove(name)
 		return "", "", 0, fmt.Errorf("storage: 关闭暂存文件失败: %w", closeErr)
 	}
@@ -334,6 +360,7 @@ func (f *FS) CommitStaged(ctx context.Context, hashSHA256, stagePath string, siz
 		return fmt.Errorf("%w(声明 %d,暂存 %d)", ErrShortWrite, size, st.Size())
 	}
 	if err := os.MkdirAll(filepath.Dir(dst), f.dirMode); err != nil {
+		f.logDiskWriteFailure("mkdir", filepath.Dir(dst), err)
 		_ = os.Remove(stagePath)
 		return fmt.Errorf("storage: 创建对象目录失败: %w", err)
 	}
@@ -345,6 +372,7 @@ func (f *FS) CommitStaged(ctx context.Context, hashSHA256, stagePath string, siz
 			_ = os.Remove(stagePath)
 			return nil
 		}
+		f.logDiskWriteFailure("rename", dst, err)
 		_ = os.Remove(stagePath)
 		return fmt.Errorf("storage: 提交对象失败: %w", err)
 	}

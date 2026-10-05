@@ -1160,7 +1160,7 @@ components:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
     QuotaExceeded:
-      description: 额度不足(507;storage_full 表示服务端磁盘水位)
+      description: 额度不足(507)
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }

@@ -99,7 +99,7 @@ su - postgres -c "/usr/lib/postgresql/15/bin/vacuumdb --all --analyze-in-stages"
 | Metric | Meaning | When to act |
 |---|---|---|
 | `netdisk_process_resident_memory_bytes` | process resident memory | near the cap (320M) the process is killed and restarted by systemd |
-| `netdisk_disk_used_percent` | object-area disk watermark | ≥90% rejects uploads; `>85` warns first |
+| `netdisk_disk_used_percent` | disk usage of the object-store volume (host/`node_exporter`) | clean up / expand before it fills up |
 | `netdisk_backup_last_success_timestamp_seconds` | time of last successful backup | `now() - it > 26h` alerts (critical) |
 | `netdisk_object_missing_total` | objects in DB but not on disk | **≥1 means data is unreadable** (critical) |
 | `netdisk_object_leak_bytes` | on disk but not in DB (occupies space) | >64MiB = disk only grows, never shrinks |

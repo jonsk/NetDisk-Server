@@ -54,10 +54,6 @@ const (
 	// 配额(4.3)
 	CodeQuotaExceeded Code = "quota_exceeded"
 	CodeQuotaReserved Code = "quota_reserved"
-	// CodeStorageFull 是**服务端磁盘**水位过高(9.1:>90% 拒绝新上传)。
-	// 与 quota_exceeded 分开:前者是"这台机器要满了"(与用户无关,重试无用),
-	// 后者是"你的额度不够"(换个空间/清点文件就能继续)。混用会让用户做错事。
-	CodeStorageFull Code = "storage_full"
 
 	// 上传(6.10)
 	CodeUploadGone       Code = "upload_gone"

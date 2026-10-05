@@ -103,9 +103,6 @@ type Policy struct {
 	ObjectDeleteDelayHr int   `yaml:"object_delete_delay_hours"`
 	SyncFeedKeepDays    int   `yaml:"sync_feed_keep_days"`
 	CursorOfflineDays   int   `yaml:"cursor_offline_days"`
-	// DiskWatermarkPercent 是存储卷"已用百分比"达到多少就拒绝新上传(9.1 默认 90;
-	// >=100 表示关闭;<=0 用默认值 —— **不允许用 0 关闭**,见 uploadsvc.checkDiskWatermark)
-	DiskWatermarkPercent int `yaml:"disk_watermark_percent"`
 	// DirOpSyncMaxRows 是目录级操作(移动/删除子树)走**同步事务**的行数上限
 	// (6.11 默认 1000,"阈值可配")。超过则转异步任务并返回 task_id。
 	//
@@ -572,8 +569,6 @@ func Default() *Config {
 			ObjectDeleteDelayHr: 24,
 			SyncFeedKeepDays:    90,
 			CursorOfflineDays:   30,
-			// 9.1:磁盘已用 >90% 拒绝新上传
-			DiskWatermarkPercent: 90,
 			// 6.11:≤1000 行同步,超阈值转异步任务
 			DirOpSyncMaxRows: 1000,
 			// 4.3:配额对账漂移告警/回写阈值(默认 1MiB)与回写开关
@@ -963,11 +958,6 @@ func (c *Config) Validate() error {
 	}
 	if c.Policy.SyncFeedKeepDays <= 0 || c.Policy.CursorOfflineDays <= 0 {
 		add("policy sync_feed_keep_days / cursor_offline_days 必须 > 0")
-	}
-	if c.Policy.DiskWatermarkPercent < 0 || c.Policy.DiskWatermarkPercent > 100 {
-		// 100 是"关闭"的显式写法;>100 无意义;负数无意义(0 用默认值)
-		add("policy.disk_watermark_percent 非法: %d(0=用默认 90,1..99=阈值,100=关闭)",
-			c.Policy.DiskWatermarkPercent)
 	}
 	if c.Policy.DirOpSyncMaxRows < 0 {
 		// 0 用默认 1000;负数无意义(而且会让**每一次**目录操作都异步,
