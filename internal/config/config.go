@@ -120,6 +120,52 @@ type Policy struct {
 	// QuotaDriftAutoFix 为真时把漂移**回写**(4.3 定稿:漂移超阈值回写并告警)。
 	// 回写口径已含在飞预留(见 repo.expectedUsedSQL),不会抹掉正在上传的预留。
 	QuotaDriftAutoFix bool `yaml:"quota_drift_autofix"`
+
+	// ---- TTL / 定时器类参数(2026-10 集中进配置,纪律 2)----
+	//
+	// 此前这些 TTL 散落在各服务常量与 main.go 的硬编码里,部署期想调只能改代码。
+	// 这里集中声明,Load 时 normalizeTTLs 把 <=0 归一化为默认值,下游严格按配置执行。
+
+	// EditLockTTL 是文件编辑锁的有效期(默认 30min,BE-S6-05)。
+	EditLockTTL Duration `yaml:"edit_lock_ttl"`
+	// UploadTicketTTL 是整个 upload 任务的生命周期(默认 24h,与 6.1 临时文件清理同窗)。
+	UploadTicketTTL Duration `yaml:"upload_ticket_ttl"`
+	// StaleUploadAfter 是"空任务闲置多久算死掉、可回收"(默认 30min)。
+	StaleUploadAfter Duration `yaml:"stale_upload_after"`
+	// FastUploadChallengeTTL 是秒传持物挑战在 Redis 的存活时间(默认 5min,一次性)。
+	FastUploadChallengeTTL Duration `yaml:"fast_upload_challenge_ttl"`
+	// StageRetentionTTL 是暂存区文件的保留时长(默认 24h,与上传票同窗)。
+	StageRetentionTTL Duration `yaml:"stage_retention_ttl"`
+	// StageCleanBatch 是暂存回收单轮处理上限(默认 500,避免一轮打满 IO)。
+	StageCleanBatch int `yaml:"stage_clean_batch"`
+	// StageCleanMaxAttempts 是单个暂存文件删除的重试上限(默认 3)。
+	StageCleanMaxAttempts int `yaml:"stage_clean_max_attempts"`
+	// ObjectLockTimeout 是对象级锁(定稿/延迟删除)单轮持锁的应用层上限(默认 30s)。
+	ObjectLockTimeout Duration `yaml:"object_lock_timeout"`
+	// EditLockCleanupInterval 是"过期编辑锁行"后台清理的周期(默认 1h)。
+	//
+	// 编辑锁的判活完全靠 `file_locks.expires_at`(读路径 `expires_at > now()`),
+	// 过期即失效;但过期的那**行**不会自己消失。本任务定期把"已过期至少一个周期"
+	// 的行删掉(olderThan 取本周期,作为宽限,避免刚过期就被删)。它只影响表的整洁,
+	// 不改变正确性。<=0 回落默认。设为极大值相当于关闭。
+	EditLockCleanupInterval Duration `yaml:"edit_lock_cleanup_interval"`
+}
+
+// SSE 是事件推送通道的参数(6.9)。
+//
+// 这些值此前硬编码在 syncsse.DefaultOptions;现集中到配置,便于按客户端规模调整
+// (网络差时调大心跳/写超时,或收紧单用户连接数)。Load 时 normalizeTTLs 保证 > 0。
+type SSE struct {
+	// Heartbeat 心跳间隔(默认 25s)
+	Heartbeat Duration `yaml:"heartbeat"`
+	// WriteTimeout 单次写的最长等待(默认 10s)
+	WriteTimeout Duration `yaml:"write_timeout"`
+	// Buffer 每条连接的待发队列长度(默认 64)
+	Buffer int `yaml:"buffer"`
+	// MaxConnsPerUser 单用户连接上限(默认 3)
+	MaxConnsPerUser int `yaml:"max_conns_per_user"`
+	// SpaceTTL 可见空间快照的存活时间(默认 60s)
+	SpaceTTL Duration `yaml:"space_ttl"`
 }
 
 type WebUI struct {
@@ -480,6 +526,7 @@ type Config struct {
 	Log        Log        `yaml:"log"`
 	RateLimits RateLimits `yaml:"rate_limits"`
 	Auth       Auth       `yaml:"auth"`
+	SSE        SSE        `yaml:"sse"`
 }
 
 // Default 返回唯一一份默认值(纪律 2)。
@@ -532,6 +579,16 @@ func Default() *Config {
 			// 4.3:配额对账漂移告警/回写阈值(默认 1MiB)与回写开关
 			QuotaDriftAlertBytes: 1 << 20,
 			QuotaDriftAutoFix:    true,
+			// TTL/定时器类(唯一一份默认值;<=0 由 normalizeTTLs 回落)
+			EditLockTTL:             Duration(30 * time.Minute),
+			UploadTicketTTL:         Duration(24 * time.Hour),
+			StaleUploadAfter:        Duration(30 * time.Minute),
+			FastUploadChallengeTTL:  Duration(5 * time.Minute),
+			StageRetentionTTL:       Duration(24 * time.Hour),
+			StageCleanBatch:         500,
+			StageCleanMaxAttempts:   3,
+			ObjectLockTimeout:       Duration(30 * time.Second),
+			EditLockCleanupInterval: Duration(time.Hour),
 		},
 		WebUI: WebUI{AdminPrefix: "/admin/", LandingPrefix: "/s/", AdminEnabled: true},
 		// 8.4:对象巡检默认开启、每日一轮;抽样量按后端分级(BE-S10-04)
@@ -564,6 +621,14 @@ func Default() *Config {
 		},
 		// 账号锁定默认值(唯一一份):连续失败 8 次锁定 5 分钟(用户 2026-09 决策)
 		Auth: Auth{FailedLoginThreshold: DefaultAuthFailThreshold, LoginLockDuration: Duration(DefaultAuthLockDuration)},
+		// SSE 通道默认值(与 syncsse.DefaultOptions 一致;集中到此处后 main 只读配置)
+		SSE: SSE{
+			Heartbeat:       Duration(25 * time.Second),
+			WriteTimeout:    Duration(10 * time.Second),
+			Buffer:          64,
+			MaxConnsPerUser: 3,
+			SpaceTTL:        Duration(60 * time.Second),
+		},
 	}
 }
 
@@ -596,7 +661,59 @@ func load(path string, getenv envReader) (*Config, error) {
 	applyEnv(c, getenv)
 	normalizeStorageBackend(c)
 	normalizeAuth(c)
+	normalizeTTLs(c)
 	return c, nil
+}
+
+// normalizeTTLs 把 TTL/定时器类参数归一化为有效值(<=0 回落默认)。
+//
+// 与 normalizeAuth 同理:下游服务"严格按配置"执行、不再各自兜底,所以必须在
+// Load 处保证正值。集中在此也避免了"某个服务忘了兜底 → 0 秒 TTL"的静默事故。
+func normalizeTTLs(c *Config) {
+	p := &c.Policy
+	if p.EditLockTTL.Std() <= 0 {
+		p.EditLockTTL = Duration(30 * time.Minute)
+	}
+	if p.UploadTicketTTL.Std() <= 0 {
+		p.UploadTicketTTL = Duration(24 * time.Hour)
+	}
+	if p.StaleUploadAfter.Std() <= 0 {
+		p.StaleUploadAfter = Duration(30 * time.Minute)
+	}
+	if p.FastUploadChallengeTTL.Std() <= 0 {
+		p.FastUploadChallengeTTL = Duration(5 * time.Minute)
+	}
+	if p.StageRetentionTTL.Std() <= 0 {
+		p.StageRetentionTTL = Duration(24 * time.Hour)
+	}
+	if p.StageCleanBatch <= 0 {
+		p.StageCleanBatch = 500
+	}
+	if p.StageCleanMaxAttempts <= 0 {
+		p.StageCleanMaxAttempts = 3
+	}
+	if p.ObjectLockTimeout.Std() <= 0 {
+		p.ObjectLockTimeout = Duration(30 * time.Second)
+	}
+	if p.EditLockCleanupInterval.Std() <= 0 {
+		p.EditLockCleanupInterval = Duration(time.Hour)
+	}
+	s := &c.SSE
+	if s.Heartbeat.Std() <= 0 {
+		s.Heartbeat = Duration(25 * time.Second)
+	}
+	if s.WriteTimeout.Std() <= 0 {
+		s.WriteTimeout = Duration(10 * time.Second)
+	}
+	if s.Buffer <= 0 {
+		s.Buffer = 64
+	}
+	if s.MaxConnsPerUser <= 0 {
+		s.MaxConnsPerUser = 3
+	}
+	if s.SpaceTTL.Std() <= 0 {
+		s.SpaceTTL = Duration(60 * time.Second)
+	}
 }
 
 // normalizeStorageBackend 把 backend 归一化(去空白、转小写),空值回落默认 fs。
@@ -734,6 +851,22 @@ func applyEnv(c *Config, getenv envReader) {
 	// 账号锁定策略(连续失败 N 次锁定一段时间)
 	num("NETDISK_AUTH_FAILED_LOGIN_THRESHOLD", &c.Auth.FailedLoginThreshold)
 	dur("NETDISK_AUTH_LOGIN_LOCK_DURATION", &c.Auth.LoginLockDuration)
+	// TTL/定时器类
+	dur("NETDISK_EDIT_LOCK_TTL", &c.Policy.EditLockTTL)
+	dur("NETDISK_UPLOAD_TICKET_TTL", &c.Policy.UploadTicketTTL)
+	dur("NETDISK_STALE_UPLOAD_AFTER", &c.Policy.StaleUploadAfter)
+	dur("NETDISK_FAST_UPLOAD_CHALLENGE_TTL", &c.Policy.FastUploadChallengeTTL)
+	dur("NETDISK_STAGE_RETENTION_TTL", &c.Policy.StageRetentionTTL)
+	num("NETDISK_STAGE_CLEAN_BATCH", &c.Policy.StageCleanBatch)
+	num("NETDISK_STAGE_CLEAN_MAX_ATTEMPTS", &c.Policy.StageCleanMaxAttempts)
+	dur("NETDISK_OBJECT_LOCK_TIMEOUT", &c.Policy.ObjectLockTimeout)
+	dur("NETDISK_EDIT_LOCK_CLEANUP_INTERVAL", &c.Policy.EditLockCleanupInterval)
+	// SSE 通道参数(6.9)
+	dur("NETDISK_SSE_HEARTBEAT", &c.SSE.Heartbeat)
+	dur("NETDISK_SSE_WRITE_TIMEOUT", &c.SSE.WriteTimeout)
+	num("NETDISK_SSE_BUFFER", &c.SSE.Buffer)
+	num("NETDISK_SSE_MAX_CONNS_PER_USER", &c.SSE.MaxConnsPerUser)
+	dur("NETDISK_SSE_SPACE_TTL", &c.SSE.SpaceTTL)
 
 	if v, ok := getenv("NETDISK_TRUSTED_PROXIES"); ok {
 		var out []string
@@ -903,6 +1036,37 @@ func (c *Config) Validate() error {
 	}
 	if c.Auth.LoginLockDuration.Std() <= 0 {
 		add("auth.login_lock_duration 必须 > 0(应由 normalizeAuth 归一化为默认 5 分钟)")
+	}
+
+	// TTL/定时器类:normalizeTTLs 已保证 > 0;此处同样只做不变量断言
+	// (防未来重构绕过 Load 直接构造 Config,把 0 带进"严格按配置"的下游)。
+	for _, ttl := range []struct {
+		name string
+		d    time.Duration
+	}{
+		{"policy.edit_lock_ttl", c.Policy.EditLockTTL.Std()},
+		{"policy.upload_ticket_ttl", c.Policy.UploadTicketTTL.Std()},
+		{"policy.stale_upload_after", c.Policy.StaleUploadAfter.Std()},
+		{"policy.fast_upload_challenge_ttl", c.Policy.FastUploadChallengeTTL.Std()},
+		{"policy.stage_retention_ttl", c.Policy.StageRetentionTTL.Std()},
+		{"policy.object_lock_timeout", c.Policy.ObjectLockTimeout.Std()},
+		{"policy.edit_lock_cleanup_interval", c.Policy.EditLockCleanupInterval.Std()},
+		{"sse.heartbeat", c.SSE.Heartbeat.Std()},
+		{"sse.write_timeout", c.SSE.WriteTimeout.Std()},
+		{"sse.space_ttl", c.SSE.SpaceTTL.Std()},
+	} {
+		if ttl.d <= 0 {
+			add("%s 必须 > 0(应由 normalizeTTLs 归一化为默认值)", ttl.name)
+		}
+	}
+	if c.Policy.StageCleanBatch <= 0 {
+		add("policy.stage_clean_batch 必须 > 0(应由 normalizeTTLs 归一化为默认 500)")
+	}
+	if c.Policy.StageCleanMaxAttempts <= 0 {
+		add("policy.stage_clean_max_attempts 必须 > 0(应由 normalizeTTLs 归一化为默认 3)")
+	}
+	if c.SSE.Buffer <= 0 || c.SSE.MaxConnsPerUser <= 0 {
+		add("sse.buffer / sse.max_conns_per_user 必须 > 0(应由 normalizeTTLs 归一化为默认值)")
 	}
 
 	if len(errs) == 0 {

@@ -142,6 +142,17 @@ policy:
   # 只想观测不改数据时设为 false。
   # Set false to observe only (never mutate data).
   quota_drift_autofix: true
+  # ---- TTL / 定时器类(2026-10 集中进配置;<=0 一律回落默认) ----
+  # ---- TTL / timer knobs (centralized 2026-10; <=0 falls back to default) ----
+  edit_lock_ttl: 30m              # 文件编辑锁有效期 / edit-lock TTL
+  upload_ticket_ttl: 24h          # upload 任务生命周期 / upload task lifetime
+  stale_upload_after: 30m         # 空任务闲置多久回收 / idle empty task reclaim window
+  fast_upload_challenge_ttl: 5m   # 秒传持物挑战存活时间 / fast-upload proof-challenge TTL
+  stage_retention_ttl: 24h        # 暂存区文件保留时长 / staging file retention
+  stage_clean_batch: 500          # 暂存回收单轮上限 / staging reclaim per-round cap
+  stage_clean_max_attempts: 3     # 单文件删除重试上限 / per-file delete retry cap
+  object_lock_timeout: 30s        # 对象锁单轮持锁上限 / per-round object-lock hold cap
+  edit_lock_cleanup_interval: 1h  # 过期编辑锁行清理周期 / expired edit-lock row cleanup interval
 
 # ============================================================================
 # 对象存储与暂存区(架构 6.5 / 6.1 / 3.1 职责 4)
@@ -395,3 +406,12 @@ rate_limits:
     per_minute: 600
     cost: 1
     by_ip: true
+
+# 事件推送通道(SSE)参数(6.9;<=0 一律回落默认)
+# Server-Sent Events channel knobs (§6.9; <=0 falls back to default)
+sse:
+  heartbeat: 25s            # 心跳间隔 / heartbeat interval
+  write_timeout: 10s        # 单次写最长等待(超时视为慢消费者) / per-write timeout (slow consumer)
+  buffer: 64                # 每条连接的待发队列长度 / per-connection send buffer
+  max_conns_per_user: 3     # 单用户连接上限 / max connections per user
+  space_ttl: 60s            # 可见空间快照存活时间 / visible-space snapshot TTL

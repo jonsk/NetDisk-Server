@@ -226,6 +226,9 @@ func run() error {
 			MaxPathBytes: cfg.Policy.MaxPathBytes,
 			MaxDepth:     cfg.Policy.MaxDepth,
 		},
+		// TTL 集中来自配置(2026-10);此前是服务内的硬编码常量。
+		TicketTTL:        cfg.Policy.UploadTicketTTL.Std(),
+		StaleUploadAfter: cfg.Policy.StaleUploadAfter.Std(),
 	}
 
 	// 5d) WebDAV Basic 认证通道(BE-S1-06):真实账密只校验一次,之后复用短期会话
@@ -247,10 +250,12 @@ func run() error {
 	dirOpQueue := &dirops.Queue{DB: db.AsQuerier(database)}
 	fileService := &filesvc.Service{
 		Spaces: repos.Space, Files: repos.File, DB: db.AsQuerier(database),
-		Feed:        syncfeed.Writer{},
-		SyncMaxRows: cfg.Policy.DirOpSyncMaxRows,
-		Queue:       dirOpQueue,
-		Log:         logger,
+		Feed: syncfeed.Writer{},
+		// 编辑锁有效期集中来自配置(2026-10);此前是 filesvc.DefaultLockTTL(30min)硬编码。
+		LockTTLSeconds: int(cfg.Policy.EditLockTTL.Std().Seconds()),
+		SyncMaxRows:    cfg.Policy.DirOpSyncMaxRows,
+		Queue:          dirOpQueue,
+		Log:            logger,
 	}
 
 	// 5g) 空间与团队成员用例服务(BE-S3-04/07)
@@ -351,7 +356,12 @@ func run() error {
 	// 5h-1) 秒传的持物证明(BE-S4-04):挑战存 Redis(TTL 5min,一次性),
 	// 校验时从**已存对象**读样本区间比对。同一实例同时给建任务(下发挑战)
 	// 与定稿(验证挑战)使用 —— 两边必须共享同一份 KV 与 Reader。
-	fastUpload := &fastupload.Service{KV: cacheClient, Reader: objectStore}
+	fastUpload := &fastupload.Service{
+		KV: cacheClient, Reader: objectStore,
+		// 挑战 TTL 与秒传下限集中来自配置(2026-10);此前是常量 5min / MinSize。
+		TTL:     cfg.Policy.FastUploadChallengeTTL.Std(),
+		MinSize: cfg.Policy.FastUploadMinSize,
+	}
 	finalizeService := &finalize.Service{
 		Pool: database.Pool, Storage: objectStore,
 		Spaces: repos.Space, Files: repos.File,
@@ -363,6 +373,8 @@ func run() error {
 		Fast: fastUpload,
 		// Feed:定稿路径的变更流写入(created/updated),与元数据同事务
 		Feed: syncfeed.Writer{},
+		// 对象锁单轮持锁上限集中来自配置(2026-10);此前硬编码 30s。
+		LockTimeout: cfg.Policy.ObjectLockTimeout.Std(),
 	}
 	uploadService.Fast = fastUpload
 	uploadService.FastMinSize = cfg.Policy.FastUploadMinSize
@@ -426,7 +438,10 @@ func run() error {
 	stageCleaner := &uploadsvc.StageCleaner{
 		Stager: objectStore, Uploads: repos.Upload, Spaces: repos.Space,
 		DB: db.AsQuerier(database), Log: logger,
-		TTL: 24 * time.Hour,
+		// 暂存回收参数集中来自配置(2026-10);此前硬编码 24h / 500 / 3。
+		TTL:         cfg.Policy.StageRetentionTTL.Std(),
+		Batch:       cfg.Policy.StageCleanBatch,
+		MaxAttempts: cfg.Policy.StageCleanMaxAttempts,
 	}
 	go func() {
 		ticker := time.NewTicker(10 * time.Minute)
@@ -607,7 +622,8 @@ func run() error {
 		Log:         logger,
 		DeleteAfter: time.Duration(cfg.Policy.ObjectDeleteDelayHr) * time.Hour,
 		ClaimTTL:    10 * time.Minute,
-		LockTimeout: 30 * time.Second,
+		// 对象锁单轮持锁上限集中来自配置(2026-10);此前硬编码 30s。
+		LockTimeout: cfg.Policy.ObjectLockTimeout.Std(),
 	}
 	go func() {
 		runOnce := func() {
@@ -655,6 +671,32 @@ func run() error {
 		}
 	}()
 
+	// 5h-2g) 过期编辑锁行清理。
+	//
+	// 编辑锁的判活靠 `file_locks.expires_at`(读路径 `expires_at > now()`),过期即失效;
+	// 但过期的**行**不会自己消失 —— 不清理会只增不减,让表膨胀、也看不到僵尸锁。
+	// 这里每 `policy.edit_lock_cleanup_interval`(默认 1h)一轮,删除"已过期至少一个
+	// 周期"的行(宽限 = 周期,避免刚过期的锁被立即删掉)。纯表维护,不改变正确性;
+	// 只在真的删到行时打一条 INFO,避免空转噪音。首个周期后才跑,避开启动窗口。
+	go func() {
+		interval := cfg.Policy.EditLockCleanupInterval.Std()
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				n, cerr := fileService.CleanupLocks(ctx, interval)
+				if cerr != nil {
+					logger.Error("过期编辑锁清理失败", "err", cerr)
+				} else if n > 0 {
+					logger.Info("过期编辑锁清理完成", "deleted", n)
+				}
+			}
+		}
+	}()
+
 	// 5i) TUS 数据面(BE-S5-03):分片暂存与 REST 建任务共用同一个 uploadsvc
 	tusService := &uploadsvc.TUSService{
 		Service:   uploadService,
@@ -677,7 +719,15 @@ func run() error {
 			out = append(out, sp.ID)
 		}
 		return out, nil
-	}, syncsse.Options{Logger: logger})
+	}, syncsse.Options{
+		// SSE 通道参数集中来自配置(2026-10);此前硬编码在 syncsse.DefaultOptions。
+		Heartbeat:       cfg.SSE.Heartbeat.Std(),
+		WriteTimeout:    cfg.SSE.WriteTimeout.Std(),
+		Buffer:          cfg.SSE.Buffer,
+		MaxConnsPerUser: cfg.SSE.MaxConnsPerUser,
+		SpaceTTL:        cfg.SSE.SpaceTTL.Std(),
+		Logger:          logger,
+	})
 	// 实例标识:Publisher 与 Subscriber 必须用**同一个**值,否则自己发出去又经
 	// Redis 回来的那一份不会被抑制 → 同一变更被投递两帧(实测过)。
 	instanceID := syncsse.NewInstanceID()

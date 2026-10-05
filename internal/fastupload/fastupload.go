@@ -123,6 +123,10 @@ type Service struct {
 	KV     KV
 	Reader Reader
 	TTL    time.Duration
+	// MinSize 覆盖开放秒传通道的最小大小(0 用 MinSize 常量)。
+	// 由 config(policy.fast_upload_min_size)注入,保证"第一道闸(uploadsvc)"
+	// 与"第二道闸(Issue)"用的是**同一个**下限,不会出现配置调小后第二道闸仍按旧值拦截。
+	MinSize int64
 	// Now 便于测试注入时钟
 	Now func() time.Time
 	// RandInt 便于测试注入确定性偏移(生产用 crypto/rand)
@@ -135,6 +139,9 @@ func (s *Service) ttl() time.Duration {
 	}
 	return DefaultTTL
 }
+
+// minSize 返回本实例开放秒传通道的最小大小(配置可覆盖,0/负值回落 MinSize)。
+func (s *Service) minSize() int64 { return MinSizeFor(s.MinSize) }
 
 func (s *Service) now() time.Time {
 	if s.Now != nil {
@@ -162,9 +169,9 @@ func (s *Service) Issue(ctx context.Context, uploadID, hash string, size int64) 
 	if uploadID == "" || hash == "" {
 		return nil, fmt.Errorf("fastupload: upload_id 与 hash 不能为空")
 	}
-	if size < MinSize {
+	if size < s.minSize() {
 		// 细则①:小文件不开通道(调用方本应先判,这里是第二道闸)
-		return nil, fmt.Errorf("fastupload: 文件 %d 字节小于秒传下限 %d", size, MinSize)
+		return nil, fmt.Errorf("fastupload: 文件 %d 字节小于秒传下限 %d", size, s.minSize())
 	}
 	offsets, err := s.sampleOffsets(size)
 	if err != nil {
